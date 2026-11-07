@@ -1,0 +1,29 @@
+from database.models import Persona
+from services.persona import build_system_prompt
+
+
+def make_persona(**kw):
+    base = dict(user_id=1, name="سارا", role="فروشندهٔ فروشگاه X", tone="صمیمی",
+                language="fa", knowledge_base="قیمت تی‌شرت: ۲۵۰ هزار تومان\nارسال: تهران ۱ روزه",
+                instructions="به مشتری‌های عمده تخفیف بده", signature="— فروشگاه X",
+                auto_reply=False, is_paused=False)
+    base.update(kw)
+    return Persona(**base)
+
+
+def test_prompt_contains_owner_facts_and_rules():
+    prompt = build_system_prompt(make_persona())
+    assert "قیمت تی‌شرت" in prompt
+    assert "مشتری‌های عمده" in prompt
+    assert "سارا" in prompt
+    assert "سخت" in prompt  # hard rules section present
+
+
+def test_prompt_never_invents_when_unknown():
+    prompt = build_system_prompt(make_persona(knowledge_base=""))
+    assert "صبر کن" in prompt  # fallback behaviour instructed
+
+
+def test_signature_included_when_set():
+    assert "— فروشگاه X" in build_system_prompt(make_persona())
+    assert "امضای" not in build_system_prompt(make_persona(signature=""))
