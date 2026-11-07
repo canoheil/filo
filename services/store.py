@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, update, case, or_
 from sqlalchemy.exc import IntegrityError
 
 from database.connection import get_session
@@ -10,40 +10,57 @@ from database.models import User, BusinessConnection, Persona, AiMessageLog
 from services.quota import utc_today
 
 
+async def _ensure_row(session, model, key: int, **values):
+    """Create under a savepoint; a competing insert must not abort the caller."""
+    row = await session.get(model, key)
+    if row is None:
+        try:
+            async with session.begin_nested():
+                row = model(**values)
+                session.add(row)
+                await session.flush()
+        except IntegrityError:
+            # A locking read sees the winner even under MariaDB REPEATABLE READ.
+            pk = model.__mapper__.primary_key[0]
+            row = (await session.execute(select(model).where(pk == key).with_for_update()
+                                         .execution_options(populate_existing=True))).scalar_one_or_none()
+            if row is None:
+                raise
+    return row
+
+
 async def get_or_create_user(tg_user_id: int, username: str | None, use_case: str | None = None) -> User:
     async with get_session() as s:
-        user = await s.get(User, tg_user_id)
-        if user is None:
-            user = User(tg_user_id=tg_user_id, username=username, use_case=use_case or "business")
-            s.add(user)
-            await s.commit()
-            await s.refresh(user)
-        elif use_case:
+        user = await _ensure_row(s, User, tg_user_id, tg_user_id=tg_user_id,
+                                 username=username, use_case=use_case or "business")
+        if username is not None:
+            user.username = username
+        if use_case is not None:
             user.use_case = use_case
-            await s.commit()
+        await s.commit()
+        await s.refresh(user)
         return user
 
 
 async def get_or_create_persona(user_id: int) -> Persona:
     async with get_session() as s:
-        p = await s.get(Persona, user_id)
-        if p is None:
-            p = Persona(user_id=user_id)
-            s.add(p)
-            await s.commit()
-            await s.refresh(p)
+        await _ensure_row(s, User, user_id, tg_user_id=user_id)
+        p = await _ensure_row(s, Persona, user_id, user_id=user_id)
+        await s.commit()
+        await s.refresh(p)
         return p
 
 
 async def update_persona(user_id: int, **fields) -> Persona:
+    allowed = {"name", "role", "tone", "language", "knowledge_base", "instructions",
+               "signature", "auto_reply", "is_paused"}
+    if fields.keys() - allowed:
+        raise ValueError("Unsupported persona field")
     async with get_session() as s:
-        p = await s.get(Persona, user_id)
-        if p is None:
-            p = Persona(user_id=user_id)
-            s.add(p)
-        for k, v in fields.items():
-            setattr(p, k, v)
-        p.updated_at = datetime.utcnow()
+        await _ensure_row(s, User, user_id, tg_user_id=user_id)
+        p = await _ensure_row(s, Persona, user_id, user_id=user_id)
+        await s.execute(update(Persona).where(Persona.user_id == user_id).values(
+            **fields, updated_at=datetime.utcnow()))
         await s.commit()
         await s.refresh(p)
         return p
@@ -52,8 +69,12 @@ async def update_persona(user_id: int, **fields) -> Persona:
 async def upsert_connection(connection_id: str, user_id: int | None, rights: dict | None,
                             tg_chat_id: int | None, is_enabled: bool) -> BusinessConnection:
     async with get_session() as s:
+        if user_id is not None:
+            await _ensure_row(s, User, user_id, tg_user_id=user_id)
         conn = await s.get(BusinessConnection, connection_id)
         if conn is None:
+            if user_id is None:
+                raise ValueError("A new connection requires an owner")
             conn = BusinessConnection(connection_id=connection_id, user_id=user_id or 0,
                                       rights=rights, tg_chat_id=tg_chat_id, is_enabled=is_enabled)
             s.add(conn)
@@ -102,6 +123,42 @@ async def take_draft(draft_id: int) -> AiMessageLog | None:
         return row
 
 
+async def claim_draft(draft_id: int, owner_id: int, *, reject: bool = False) -> AiMessageLog | None:
+    """Atomically authorize and consume a pending draft before any network I/O.
+
+    A sending/uncertain draft is never automatically retried: Telegram sends
+    cannot participate in our transaction and a timeout may hide a successful send.
+    """
+    async with get_session() as s:
+        owned_connections = select(BusinessConnection.connection_id).where(
+            BusinessConnection.user_id == owner_id)
+        result = await s.execute(
+            update(AiMessageLog).where(
+                AiMessageLog.id == draft_id,
+                AiMessageLog.direction == "draft",
+                AiMessageLog.status == "draft",
+                AiMessageLog.connection_id.in_(owned_connections),
+            ).values(status="rejected" if reject else "sending",
+                     **({"draft_text": None} if reject else {}))
+        )
+        if result.rowcount != 1:
+            await s.rollback()
+            return None
+        await s.commit()
+        return await s.get(AiMessageLog, draft_id)
+
+
+async def set_draft_delivery_state(draft_id: int, status: str) -> None:
+    """Keep content on blocked/uncertain delivery for manual investigation."""
+    if status not in {"blocked", "uncertain"}:
+        raise ValueError("Unsupported delivery state")
+    async with get_session() as s:
+        await s.execute(update(AiMessageLog).where(
+            AiMessageLog.id == draft_id, AiMessageLog.status == "sending"
+        ).values(status=status))
+        await s.commit()
+
+
 async def finish_draft(draft_id: int, status: str) -> None:
     async with get_session() as s:
         row = await s.get(AiMessageLog, draft_id)
@@ -122,22 +179,28 @@ async def log_outbound(connection_id: str, chat_id: int, message_id: int, status
 
 
 async def quota_hit_and_count(user_id: int, free_limit: int) -> tuple[bool, int]:
-    """Returns (allowed, used_after). Atomically resets on new UTC day."""
+    """Reserve one AI request with a conditional UPDATE (including UTC rollover).
+
+    Keep the write lock through reading the result. No external calls occur in
+    this transaction. Failed AI calls still consume the reservation by design.
+    """
     today = utc_today()
     async with get_session() as s:
+        result = await s.execute(update(User).where(
+            User.tg_user_id == user_id,
+            User.plan == "free",
+            free_limit > 0,
+            or_(User.quota_date != today, User.quota_used < free_limit),
+        ).ordered_values(
+            # MySQL evaluates SET left-to-right: read the OLD date before changing it.
+            (User.quota_used, case((User.quota_date != today, 1), else_=User.quota_used + 1)),
+            (User.quota_date, today),
+        ))
         user = await s.get(User, user_id)
-        if user is None:
-            return False, 0
-        if user.plan != "free":
-            return True, user.quota_used
-        if user.quota_date != today:
-            user.quota_date, user.quota_used = today, 0
-        if user.quota_used >= free_limit:
-            await s.commit()
-            return False, user.quota_used
-        user.quota_used += 1
+        allowed = user is not None and (user.plan != "free" or result.rowcount == 1)
+        used = user.quota_used if user is not None else 0
         await s.commit()
-        return True, user.quota_used
+        return allowed, used
 
 
 async def delete_user_data(tg_user_id: int) -> None:
@@ -151,3 +214,16 @@ async def delete_user_data(tg_user_id: int) -> None:
         if user:
             await s.delete(user)
         await s.commit()
+
+
+async def list_open_drafts(owner_id: int) -> list[AiMessageLog]:
+    """Owner-scoped recovery view; ambiguous deliveries have no resend action."""
+    async with get_session() as s:
+        result = await s.execute(select(AiMessageLog).join(
+            BusinessConnection, BusinessConnection.connection_id == AiMessageLog.connection_id
+        ).where(
+            BusinessConnection.user_id == owner_id,
+            AiMessageLog.direction == "draft",
+            AiMessageLog.status.in_(["draft", "sending", "blocked", "uncertain"]),
+        ).order_by(AiMessageLog.id.desc()).limit(20))
+        return list(result.scalars())
