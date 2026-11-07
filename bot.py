@@ -6,7 +6,6 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 
 from core.config import get_settings
 from core.logging import setup_logging
@@ -29,7 +28,7 @@ async def main() -> None:
 
     await init_db()  # v1 convenience; use alembic for schema changes after launch
 
-    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
     dp = Dispatcher()
     dp.message.outer_middleware(RateLimitMiddleware())
     dp.callback_query.outer_middleware(RateLimitMiddleware())

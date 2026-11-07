@@ -23,7 +23,7 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _engine = create_async_engine(get_settings().DATABASE_URL, poolclass=NullPool)
+        _engine = create_async_engine(get_settings().DATABASE_URL, poolclass=NullPool, hide_parameters=True)
     return _engine
 
 
