@@ -86,3 +86,11 @@ bot.py (entry, polling, allowed_updates شامل business_*) · core/config.py �
 - Shared URL normalization enforces utf8mb4 for bot and Alembic MySQL connections. No production migration has been run here.
 - docs/unicode-storage-repair.md covers backup, staging, stopping writers, existing create_all adoption, verification and manual data re-entry. Existing question-mark replacements cannot be recovered automatically.
 - 43 local tests passed, including offline MySQL ALTER/create SQL checks and existing SQLite migration roundtrip. Live MariaDB execution remains unverified.
+
+## منوی Inline — 2026-11-08
+- handlers/menu.py پیش از router قدیمی ثبت می‌شود؛ /start و /menu داشبورد جدید با مسیرهای شخصیت، دانش/قوانین، حالت، اتصال، پیش‌نویس و حریم خصوصی هستند. /help کامندها را حفظ می‌کند، /forget به تأیید حذف هدایت می‌کند.
+- FSM متن ورودی را پس از اعتبارسنجی ثبت می‌کند؛ فیلدها allowlist دارند و ورودی بلند truncate نمی‌شود. ناوبری و کامند، ویرایش را لغو می‌کند. MemoryStorage و تأییدها پس از restart از بین می‌روند؛ schema جدیدی لازم نیست.
+- تأیید خودکار/حذف/پاک‌کردن فیلد با FSM هدف یک‌بارمصرف دارند؛ SimpleEventIsolation برای یک پروسهٔ polling اضافه شد. /setauto on قدیمی همچنان رفتار قبلی دارد.
+- callbackهای ui فقط در private با chat.id == from_user.id مجازند؛ نمایش draft مالک را از callback می‌گیرد نه message.from_user بات.
+- style واقعی primary/success/danger روی aiogram 3.31 تأیید شد؛ رندر رنگ وابسته به کلاینت است. دکمه‌های قدیمی approve/reject هم رنگ گرفته‌اند. منوی فرمان‌های native در startup ثبت می‌شود.
+- docs/inline-menu.md شامل تصمیم‌های UX، محدودیت‌ها و تست دستی است. تلگرام واقعی هنوز تست نشده است.
