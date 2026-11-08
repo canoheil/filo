@@ -4,6 +4,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from core.config import get_settings
+from database.charset import unicode_database_url
 from database.base import Base
 import database.models  # noqa: F401 — register tables
 
@@ -11,7 +12,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-sync_url = get_settings().DATABASE_URL.replace("+asyncmy", "+pymysql")
+sync_url = unicode_database_url(
+    get_settings().DATABASE_URL.replace("+asyncmy", "+pymysql")
+).render_as_string(hide_password=False)
 config.set_main_option("sqlalchemy.url", sync_url.replace("%", "%%"))
 target_metadata = Base.metadata
 

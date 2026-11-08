@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from core.config import get_settings
+from database.charset import unicode_database_url
 from database.base import Base  # noqa: F401  (imported so metadata is registered)
 import database.models  # noqa: F401
 
@@ -23,7 +24,7 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _engine = create_async_engine(get_settings().DATABASE_URL, poolclass=NullPool, hide_parameters=True)
+        _engine = create_async_engine(unicode_database_url(get_settings().DATABASE_URL), poolclass=NullPool, hide_parameters=True)
     return _engine
 
 
