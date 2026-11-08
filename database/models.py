@@ -81,3 +81,14 @@ class AiMessageLog(Base):
     draft_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SetupProgress(Base):
+    """Durable onboarding metadata only; no conversation or AI response content."""
+    __tablename__ = "setup_progress"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_user_id"), primary_key=True)
+    completed: Mapped[list] = mapped_column(JSON, default=list)
+    tested_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -171,8 +171,9 @@ async def test_repair_requires_confirmation(state, monkeypatch):
 @pytest.mark.parametrize("mode", ["ok", "quota", "corrupt", "error", "long"])
 async def test_sandbox_never_sends_or_saves_drafts(state, monkeypatch, mode):
     await state.set_state(menu.EditPersona.sandbox)
-    persona = SimpleNamespace(name="???" if mode == "corrupt" else "فیلو", role="دستیار", tone="مودب")
-    monkeypatch.setattr(menu.store, "get_or_create_user", AsyncMock())
+    persona = SimpleNamespace(name="???" if mode == "corrupt" else "فیلو", role="دستیار", tone="مودب", language="fa", knowledge_base="", instructions="", signature="")
+    monkeypatch.setattr(menu.store, "get_or_create_user", AsyncMock(return_value=SimpleNamespace(use_case="business")))
+    monkeypatch.setattr(menu.store, "record_setup_test", AsyncMock())
     monkeypatch.setattr(menu.store, "get_or_create_persona", AsyncMock(return_value=persona))
     quota = AsyncMock(return_value=(mode != "quota", 1))
     monkeypatch.setattr(menu.store, "quota_hit_and_count", quota)
@@ -195,3 +196,17 @@ async def test_sandbox_never_sends_or_saves_drafts(state, monkeypatch, mode):
         assert any("پاسخ آزمایشی" in call.args[0] for call in msg.answer.call_args_list)
     if mode == "error":
         assert all("private" not in call.args[0] for call in msg.answer.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_setup_start_requires_pending_confirmation(state, monkeypatch):
+    from handlers import setup
+    action = AsyncMock()
+    monkeypatch.setattr(setup, "navigate_setup", action)
+    await menu.navigate(callback("setup:start"), state)
+    action.assert_not_called()
+    await state.update_data(confirmation="setup:start")
+    await menu.navigate(callback("setup:start"), state)
+    action.assert_awaited_once()
+    await menu.navigate(callback("setup:start"), state)
+    assert action.await_count == 1

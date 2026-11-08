@@ -52,7 +52,7 @@ if it already has other query parameters), then restart the bot after migration.
    "$PY" -m alembic check
    "$PY" -m tools.check_encoding --ai
    ```
-   The revision should be 0002_unicode_storage. Target column charsets and the first
+   The revision should be the current head (now 0003_setup_progress), with 0002_unicode_storage applied. Target column charsets and the first
    three connection charset values should be utf8mb4. The database default may still
    be latin1; the repaired tables no longer inherit it. SQLite skips the charset DDL.
 5. Re-enter damaged persona values. `/setname`, `/setrole`, `/settone`, `/setinfo`
