@@ -78,3 +78,11 @@ bot.py (entry, polling, allowed_updates شامل business_*) · core/config.py �
 - /drafts فقط در private: آخرین ۲۰ مورد owner-scoped؛ بازیابی دکمه فقط برای draft. موارد دیگر صرفاً وضعیت دارند. بازنشانی/حذف خطاها و TTL همچنان پیاده نشده‌اند.
 - شکست preview یا callback acknowledgement دیگر مسیر ارسال را با exception خام قطع نمی‌کند. preview کوتاه می‌شود و متن اصلی در DB می‌ماند.
 - چک‌لیست دستی docs/server-smoke-test.md اضافه شد؛ هنوز روی سرور/تلگرام واقعی اجرا نشده است.
+
+## Unicode storage repair
+- Production diagnostics showed latin1 table/column defaults and utf8mb3 connection, despite valid direct Persian AI output. Connection echo alone does not verify stored Unicode.
+- 0002_unicode_storage explicitly changes defaults and string/text columns on personas and ai_message_log to utf8mb4/utf8mb4_unicode_ci, preserving types/nullability. MySQL downgrade deliberately refuses lossy conversion. SQLite skips charset DDL.
+- All ORM tables now have mysql_charset/mysql_collate; 0001 create_table options amended only for fresh installs. Existing installations must upgrade to 0002, not stamp it. Existing users/business_connections are not converted by this repair.
+- Shared URL normalization enforces utf8mb4 for bot and Alembic MySQL connections. No production migration has been run here.
+- docs/unicode-storage-repair.md covers backup, staging, stopping writers, existing create_all adoption, verification and manual data re-entry. Existing question-mark replacements cannot be recovered automatically.
+- 43 local tests passed, including offline MySQL ALTER/create SQL checks and existing SQLite migration roundtrip. Live MariaDB execution remains unverified.

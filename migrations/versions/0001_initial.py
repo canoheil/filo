@@ -21,7 +21,9 @@ def upgrade() -> None:
     sa.Column('model', sa.String(length=64), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('connection_id', 'chat_id', 'message_id', 'direction', name='uq_ai_log_direction')
+    sa.UniqueConstraint('connection_id', 'chat_id', 'message_id', 'direction', name='uq_ai_log_direction'),
+    mysql_charset='utf8mb4',
+    mysql_collate='utf8mb4_unicode_ci'
     )
     op.create_index(op.f('ix_ai_message_log_connection_id'), 'ai_message_log', ['connection_id'], unique=False)
     op.create_table('users',
@@ -32,7 +34,9 @@ def upgrade() -> None:
     sa.Column('quota_date', sa.String(length=10), nullable=False),
     sa.Column('quota_used', sa.Integer(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
-    sa.PrimaryKeyConstraint('tg_user_id')
+    sa.PrimaryKeyConstraint('tg_user_id'),
+    mysql_charset='utf8mb4',
+    mysql_collate='utf8mb4_unicode_ci'
     )
     op.create_table('business_connections',
     sa.Column('connection_id', sa.String(length=255), nullable=False),
@@ -44,7 +48,9 @@ def upgrade() -> None:
     sa.Column('connected_at', sa.DateTime(), nullable=False),
     sa.Column('disconnected_at', sa.DateTime(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['users.tg_user_id'], ),
-    sa.PrimaryKeyConstraint('connection_id')
+    sa.PrimaryKeyConstraint('connection_id'),
+    mysql_charset='utf8mb4',
+    mysql_collate='utf8mb4_unicode_ci'
     )
     op.create_index(op.f('ix_business_connections_user_id'), 'business_connections', ['user_id'], unique=False)
     op.create_table('personas',
@@ -61,7 +67,9 @@ def upgrade() -> None:
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.tg_user_id'], ),
-    sa.PrimaryKeyConstraint('user_id')
+    sa.PrimaryKeyConstraint('user_id'),
+    mysql_charset='utf8mb4',
+    mysql_collate='utf8mb4_unicode_ci'
     )
     # ### end Alembic commands ###
 

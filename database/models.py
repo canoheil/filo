@@ -15,6 +15,7 @@ from database.base import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
 
     tg_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -29,6 +30,7 @@ class BusinessConnection(Base):
     """One row per Chat Automation connection (max 1 per Telegram account)."""
 
     __tablename__ = "business_connections"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
 
     connection_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_user_id"), index=True)
@@ -44,6 +46,7 @@ class Persona(Base):
     """Per-owner customizable secretary persona (the heart of the product)."""
 
     __tablename__ = "personas"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
 
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_user_id"), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), default="سکرتر من")
@@ -66,6 +69,7 @@ class AiMessageLog(Base):
     __tablename__ = "ai_message_log"
     __table_args__ = (
         UniqueConstraint("connection_id", "chat_id", "message_id", "direction", name="uq_ai_log_direction"),
+        {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
