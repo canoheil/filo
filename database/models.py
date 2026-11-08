@@ -49,7 +49,7 @@ class Persona(Base):
     __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
 
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_user_id"), primary_key=True)
-    name: Mapped[str] = mapped_column(String(120), default="سکرتر من")
+    name: Mapped[str] = mapped_column(String(120), default="فیلو")
     role: Mapped[str] = mapped_column(String(255), default="دستیار من")      # e.g. "فروشندهٔ فروشگاه X"
     tone: Mapped[str] = mapped_column(String(120), default="مودب و رسمی")
     language: Mapped[str] = mapped_column(String(8), default="fa")

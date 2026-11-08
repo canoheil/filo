@@ -144,3 +144,54 @@ async def test_menu_is_registered_before_legacy_start(monkeypatch):
     finally:
         await dp.storage.close()
         await bot.session.close()
+
+
+def test_question_only_detection_is_conservative():
+    from services.persona_health import is_question_only
+    assert is_question_only("??? ????")
+    assert not is_question_only("قیمت؟؟")
+    assert not is_question_only("Sarah?")
+    assert not is_question_only("")
+
+
+@pytest.mark.asyncio
+async def test_repair_requires_confirmation(state, monkeypatch):
+    repair = AsyncMock(return_value=True)
+    monkeypatch.setattr(menu.store, "reset_damaged_persona_field", repair)
+    monkeypatch.setattr(menu, "show", AsyncMock())
+    await menu.navigate(callback("repair:name"), state)
+    repair.assert_not_called()
+    await menu.navigate(callback("repairask:name"), state)
+    await menu.navigate(callback("repair:name"), state)
+    await menu.navigate(callback("repair:name"), state)
+    repair.assert_awaited_once_with(1, "name")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["ok", "quota", "corrupt", "error", "long"])
+async def test_sandbox_never_sends_or_saves_drafts(state, monkeypatch, mode):
+    await state.set_state(menu.EditPersona.sandbox)
+    persona = SimpleNamespace(name="???" if mode == "corrupt" else "فیلو", role="دستیار", tone="مودب")
+    monkeypatch.setattr(menu.store, "get_or_create_user", AsyncMock())
+    monkeypatch.setattr(menu.store, "get_or_create_persona", AsyncMock(return_value=persona))
+    quota = AsyncMock(return_value=(mode != "quota", 1))
+    monkeypatch.setattr(menu.store, "quota_hit_and_count", quota)
+    generate = AsyncMock(return_value="پاسخ آزمایشی")
+    if mode == "error":
+        generate.side_effect = RuntimeError("private")
+    monkeypatch.setattr(menu.ai, "generate_reply", generate)
+    monkeypatch.setattr(menu.persona_service, "build_system_prompt", lambda _: "prompt")
+    save = AsyncMock()
+    monkeypatch.setattr(menu.store, "save_draft", save)
+    msg = SimpleNamespace(text="x" * 2001 if mode == "long" else "سلام", from_user=SimpleNamespace(id=1), answer=AsyncMock())
+    await menu.sandbox_reply(msg, state)
+    save.assert_not_called()
+    assert all("business_connection_id" not in call.kwargs for call in msg.answer.call_args_list)
+    if mode in {"quota", "corrupt", "long"}:
+        generate.assert_not_called()
+    if mode in {"corrupt", "long"}:
+        quota.assert_not_called()
+    if mode == "ok":
+        assert any("پاسخ آزمایشی" in call.args[0] for call in msg.answer.call_args_list)
+    if mode == "error":
+        assert all("private" not in call.args[0] for call in msg.answer.call_args_list)

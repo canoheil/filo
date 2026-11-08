@@ -105,3 +105,14 @@ async def test_open_drafts_are_owner_scoped(sessions):
         await s.commit()
     assert [row.id for row in await store.list_open_drafts(1)] == [2, 1]
     assert await store.list_open_drafts(99) == []
+
+
+@pytest.mark.asyncio
+async def test_repair_preserves_custom_and_mixed_values(sessions):
+    await store.update_persona(1, name="????", role="??? ???", tone="لحن؟")
+    assert await store.reset_damaged_persona_field(1, "name")
+    assert await store.reset_damaged_persona_field(1, "role")
+    assert not await store.reset_damaged_persona_field(1, "tone")
+    assert not await store.reset_damaged_persona_field(1, "name")
+    p = await store.get_or_create_persona(1)
+    assert p.name == "فیلو" and p.role == "دستیار من" and p.tone == "لحن؟"

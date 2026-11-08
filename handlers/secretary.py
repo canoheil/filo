@@ -29,7 +29,7 @@ async def on_business_connection(event: BusinessConnection, bot: Bot) -> None:
     )
     try:
         if event.is_enabled:
-            await bot.send_message(event.user.id, "🔗 سکرتر وصل شد! از حالا پیام‌های دایرکتت را می‌توانم جواب بدهم.\nبا /whoami تنظیماتت را ببین.")
+            await bot.send_message(event.user.id, "🔗 فیلو وصل شد! از حالا پیام‌های دایرکتت را می‌توانم جواب بدهم.\nبا /menu تنظیمات دستیار را ببین.")
         else:
             await bot.send_message(event.user.id, "🔌 اتصال از طرف تلگرام قطع شد. اگر اشتباه است دوباره از Chat Automation وصل کن.")
     except Exception as e:  # owner may have blocked the bot in DM

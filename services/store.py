@@ -234,3 +234,20 @@ async def list_user_connections(owner_id: int) -> list[BusinessConnection]:
         result = await s.execute(select(BusinessConnection).where(
             BusinessConnection.user_id == owner_id))
         return list(result.scalars())
+
+
+async def reset_damaged_persona_field(owner_id: int, field: str) -> bool:
+    """Explicit user-approved reset; preserve healthy or concurrently edited values."""
+    from services.persona_health import DEFAULTS, is_question_only
+    if field not in DEFAULTS:
+        raise ValueError("Unsupported repair field")
+    async with get_session() as s:
+        p = await s.get(Persona, owner_id)
+        if p is None or not is_question_only(getattr(p, field)):
+            return False
+        column = getattr(Persona, field)
+        result = await s.execute(update(Persona).where(
+            Persona.user_id == owner_id, column == getattr(p, field)
+        ).values(**{field: DEFAULTS[field]}, updated_at=datetime.utcnow()))
+        await s.commit()
+        return result.rowcount == 1
