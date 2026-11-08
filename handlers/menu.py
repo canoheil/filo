@@ -7,7 +7,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from core.config import get_settings
-from services import store
+from services import store, ai, persona as persona_service
+from services.persona_health import DEFAULTS, is_question_only, display_value
 from services.quota import utc_today
 
 router = Router()
@@ -16,6 +17,7 @@ router.message.filter(F.chat.type == "private")
 
 class EditPersona(StatesGroup):
     value = State()
+    sandbox = State()
 
 
 FIELDS = {
@@ -41,7 +43,7 @@ def home_keyboard():
         [button("🎭 شخصیت دستیار", "persona"), button("📚 اطلاعات و قوانین", "knowledge")],
         [button("⚙️ شیوهٔ پاسخ‌دهی", "mode", "primary"), button("✍️ پیش‌نویس‌ها", "drafts")],
         [button("🔗 اتصال تلگرام", "connection"), button("❓ راهنما", "help")],
-        [button("🔒 حریم خصوصی", "privacy")],
+        [button("🧪 آزمایش پاسخ", "sandbox", "primary"), button("🔒 حریم خصوصی", "privacy")],
     )
 
 
@@ -55,7 +57,7 @@ async def home(owner_id):
     used = user.quota_used if user.quota_date == utc_today() else 0
     quota = f"{used} از {get_settings().FREE_DAILY_LIMIT} درخواست امروز" if user.plan == "free" else "بدون سقف روزانه در پلن فعلی"
     mode = "خودکار" if p.auto_reply else "پیش‌نویس با تأیید تو"
-    return (f"دستیار تلگرام تو\n\nنام: {p.name}\n"
+    return (f"فیلو | دستیار تلگرام تو\n\nنام: {display_value(p.name)}\n"
             f"وضعیت: {'⏸ مکث' if p.is_paused else '▶️ فعال'}\n"
             f"پاسخ‌دهی: {mode}\nپلن: {user.plan}\nسهمیه: {quota}\n\n"
             "از کجا شروع کنیم؟ برای شروع امن، اطلاعات را تکمیل کن و حالت پیش‌نویس را نگه دار.")
@@ -84,7 +86,7 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
         return
     action = (cb.data or "")[3:]
     pending = (await state.get_data()).get("confirmation")
-    if action in {"autoconfirm", "forgetconfirm"} or action.startswith("clear:"):
+    if action in {"autoconfirm", "forgetconfirm"} or action.startswith(("clear:", "repair:")):
         if pending != action:
             await cb.answer("این تأیید منقضی شده؛ دوباره از منو شروع کن.", show_alert=True)
             return
@@ -98,10 +100,31 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
         fields = ["name", "role", "tone", "signature"] if action == "persona" else ["knowledge_base", "instructions"]
         rows = [[button("✏️ " + FIELDS[f][0], f"edit:{f}")] for f in fields]
         if action == "persona":
+            for field in DEFAULTS:
+                if is_question_only(getattr(p, field)):
+                    rows.append([button(f"اصلاح {FIELDS[field][0]} آسیب‌دیده", f"repairask:{field}")])
             rows.append([button("🏪 کسب‌وکار", "use:business"), button("🧑 شخصی", "use:personal")])
-        summary = (f"نام: {p.name}\nنقش: {p.role}\nلحن: {p.tone}\nامضا: {p.signature or 'بدون امضا'}"
+        summary = (f"نام: {display_value(p.name)}\nنقش: {display_value(p.role)}\nلحن: {display_value(p.tone)}\nامضا: {p.signature or 'بدون امضا'}"
                    if action == "persona" else f"اطلاعات: {len(p.knowledge_base)} کاراکتر\nقوانین: {len(p.instructions)} کاراکتر")
         await show(cb, summary + "\n\nبرای ویرایش، یک مورد را انتخاب کن.", keyboard(*rows, back()))
+    elif action.startswith("repairask:") and action[10:] in DEFAULTS:
+        field = action[10:]
+        await state.update_data(confirmation=f"repair:{field}")
+        await show(cb, f"حروف قبلی قابل بازیابی نیستند. {FIELDS[field][0]} به «{DEFAULTS[field]}» بازنشانی شود؟\n"
+                   "می‌توانی به‌جای بازنشانی، از بخش ویرایش مقدار دلخواهت را بنویسی.\n"
+                   "اگر مقدار جدید هم خراب شد، تنظیم charset دیتابیس هنوز نیازمند بررسی است.", keyboard(
+                       [button("تأیید بازنشانی", f"repair:{field}", "success")], [button("انصراف", "persona")]))
+    elif action.startswith("repair:") and action[7:] in DEFAULTS:
+        repaired = await store.reset_damaged_persona_field(uid, action[7:])
+        await show(cb, "مقدار پیش‌فرض ثبت شد." if repaired else "تغییری انجام نشد؛ مقدار سالم است یا قبلاً تغییر کرده.",
+                   keyboard([button("شخصیت دستیار", "persona")], back()))
+    elif action == "sandbox":
+        await state.set_state(EditPersona.sandbox)
+        await show(cb, "آزمایش پاسخ فیلو\n\nیک پیام فرضی از مخاطب بنویس. پاسخ فقط همین‌جا نمایش داده می‌شود؛ "
+                   "برای هیچ مخاطبی ارسال و به‌عنوان پیش‌نویس ذخیره نمی‌شود.\n"
+                   "متن برای پردازش به سرویس AI می‌رود و هر آزمایش یک سهمیه مصرف می‌کند، حتی در صورت خطا.\n"
+                   "از اطلاعات حساس استفاده نکن. حداکثر ۲۰۰۰ کاراکتر؛ برای انصراف /cancel.",
+                   keyboard([button("انصراف", "home")]))
     elif action.startswith("edit:") and action[5:] in FIELDS:
         field = action[5:]
         title, hint, limit = FIELDS[field]
@@ -216,3 +239,40 @@ async def save_edit(message: Message, state: FSMContext):
 @router.message(EditPersona.value, ~F.text)
 async def nontext_edit(message: Message):
     await message.answer("برای این تنظیم یک پیام متنی بفرست؛ برای لغو /cancel را بزن.")
+
+
+@router.message(EditPersona.sandbox, F.text, ~F.text.startswith("/"))
+async def sandbox_reply(message: Message, state: FSMContext):
+    text = message.text.strip()
+    if not text or len(text) > 2000:
+        await message.answer("یک پیام متنی بین ۱ تا ۲۰۰۰ کاراکتر بفرست یا /cancel را بزن.")
+        return
+    owner_id = message.from_user.id
+    await store.get_or_create_user(owner_id, None)
+    p = await store.get_or_create_persona(owner_id)
+    if any(is_question_only(getattr(p, field)) for field in DEFAULTS):
+        await state.clear()
+        await message.answer("اول نام، نقش و لحن آسیب‌دیده را در شخصیت دستیار اصلاح کن؛ سپس آزمایش را شروع کن.",
+                             reply_markup=keyboard([button("اصلاح شخصیت", "persona")], back()))
+        return
+    allowed, _ = await store.quota_hit_and_count(owner_id, get_settings().FREE_DAILY_LIMIT)
+    await state.clear()
+    if not allowed:
+        await message.answer("سهمیهٔ امروز تمام شده؛ آزمایش به سرویس AI ارسال نشد.", reply_markup=home_keyboard())
+        return
+    try:
+        reply = await ai.generate_reply(persona_service.build_system_prompt(p), text)
+    except Exception:
+        await message.answer("آزمایش پاسخ ناموفق بود؛ کمی بعد دوباره امتحان کن. سهمیهٔ این درخواست مصرف شد.",
+                             reply_markup=home_keyboard())
+        return
+    await message.answer("🧪 پاسخ آزمایشی — به مخاطبی ارسال نشده:", parse_mode=None)
+    for offset in range(0, len(reply), 1800):
+        await message.answer(reply[offset:offset + 1800], parse_mode=None)
+    await message.answer("برای اصلاح پاسخ، اطلاعات یا قوانین را ویرایش کن.", reply_markup=keyboard(
+        [button("آزمایش دوباره", "sandbox", "primary"), button("اطلاعات و قوانین", "knowledge")], back()))
+
+
+@router.message(EditPersona.sandbox, ~F.text)
+async def sandbox_nontext(message: Message):
+    await message.answer("برای آزمایش، یک پیام متنی بفرست؛ برای انصراف /cancel.")

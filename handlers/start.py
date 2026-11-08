@@ -7,13 +7,14 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 
 from core.config import get_settings
 from services import store
+from services.persona_health import display_value
 
 router = Router()
 router.message.filter(F.chat.type == "private")
 
 WELCOME = (
     "سلام! 👋\n"
-    "من سکرتر هوشمند تلگرامم؛ می‌توانم از طرف تو و با اجازهٔ تو به پیام‌های خصوصی‌ات جواب بدهم.\n\n"
+    "من فیلو هستم، دستیار هوشمند تلگرام تو؛ می‌توانم از طرف تو و با اجازهٔ تو به پیام‌های خصوصی‌ات جواب بدهم.\n\n"
     "اول بگو برای چی می‌خواهی ازم استفاده کنی تا استایل پیش‌فرض را بچینم:"
 )
 
@@ -27,12 +28,12 @@ def use_case_kb() -> InlineKeyboardMarkup:
 
 HELP = (
     "دستورات:\n"
-    "/whoami — پروفایل فعلی سکرترت\n"
+    "/whoami — پروفایل فعلی دستیار تو\n"
     "/drafts — پیش‌نویس‌های باز و وضعیت ارسال\n"
-    "/setname <نام> — اسم سکرتر (مثلاً «سارا»)\n"
+    "/setname <نام> — نام دستیار (مثلاً «سارا»)\n"
     "/setrole <نقش> — نقش (مثلاً «فروشندهٔ فروشگاه X» یا «دستیار شخصی من»)\n"
     "/settone <لحن> — لحن پاسخ\n"
-    "/setinfo <متن> — اطلاعات/دانش سکرتر؛ هر چیزی که باید بداند (قیمت‌ها، ساعات کاری، FAQ…)\n"
+    "/setinfo <متن> — اطلاعات/دانش دستیار؛ هر چیزی که باید بداند (قیمت‌ها، ساعات کاری، FAQ…)\n"
     "/setrules <متن> — قوانین اختصاصی تو برای جواب دادن\n"
     "/setauto on|off — حالت ارسال مستقیم یا «پیش‌نویس برای تأیید» (پیش‌فرض)\n"
     "/pause و /resume — مکث و ادامه\n"
@@ -70,7 +71,7 @@ async def cmd_whoami(message: Message) -> None:
     mode = "🟢 خودکار (پیش‌نویس نمی‌گیرد)" if p.auto_reply else "🟡 پیش‌نویس برای تأیید"
     await message.answer(
         f"پلن: {user.plan} | حالت: {mode}\n"
-        f"نام: {p.name}\nنقش: {p.role}\nلحن: {p.tone}\n"
+        f"نام: {display_value(p.name)}\nنقش: {display_value(p.role)}\nلحن: {display_value(p.tone)}\n"
         f"دانش: {len(p.knowledge_base)} کاراکتر | قوانین: {len(p.instructions)} کاراکتر\n"
         f"پاز: {'بله' if p.is_paused else 'خیر'}"
     )
@@ -110,7 +111,7 @@ async def cmd_settone(message: Message) -> None:
 async def cmd_setinfo(message: Message) -> None:
     value = (message.text or "").split(maxsplit=1)[1:] or [""]
     if not value[0].strip():
-        await message.answer("فرمت: /setinfo <متن کامل اطلاعات> — هر سطری که می‌خواهی سکرتر بداند")
+        await message.answer("فرمت: /setinfo <متن کامل اطلاعات> — هر سطری که می‌خواهی دستیار بداند")
         return
     await store.update_persona(message.from_user.id, knowledge_base=value[0].strip())
     await message.answer("ثبت شد ✓ — این اطلاعات مبنای جواب‌هاست.")

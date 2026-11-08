@@ -94,3 +94,9 @@ bot.py (entry, polling, allowed_updates شامل business_*) · core/config.py �
 - callbackهای ui فقط در private با chat.id == from_user.id مجازند؛ نمایش draft مالک را از callback می‌گیرد نه message.from_user بات.
 - style واقعی primary/success/danger روی aiogram 3.31 تأیید شد؛ رندر رنگ وابسته به کلاینت است. دکمه‌های قدیمی approve/reject هم رنگ گرفته‌اند. منوی فرمان‌های native در startup ثبت می‌شود.
 - docs/inline-menu.md شامل تصمیم‌های UX، محدودیت‌ها و تست دستی است. تلگرام واقعی هنوز تست نشده است.
+
+## ادامهٔ تکمیل فیلو: دادهٔ قدیمی و sandbox
+- question-only name/role/tone conservatively detected in persona_health; UI marks damaged values rather than rendering raw question marks. No automatic destructive replacement.
+- Persona panel offers per-field default reset with one-use confirmation. Store applies owner-scoped compare-and-set only if the current field is still question-only. Healthy/mixed custom values are preserved. Not reconstruction; charset migration still required before saving new values.
+- Sandbox UI state accepts up to 2000 characters, checks daily quota before AI, uses persona prompt and displays reply only in bot DM; no draft storage or business sends. Follows command/navigation cancellation; no chat history. Does not change pause/auto settings.
+- 60 local tests passed including repair ownership/healthy-value preservation, one-use confirmation and sandbox success/quota/error/input-length paths. No production deployment performed here.
