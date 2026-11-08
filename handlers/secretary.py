@@ -108,8 +108,8 @@ async def on_business_message(message: Message, bot: Bot) -> None:
 
     # --- Draft mode (default): owner approves in DM --------------------------
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ ارسال", callback_data=f"draft:approve:{draft_id}"),
-        InlineKeyboardButton(text="✖ رد", callback_data=f"draft:reject:{draft_id}"),
+        InlineKeyboardButton(text="✅ ارسال", callback_data=f"draft:approve:{draft_id}", style="success"),
+        InlineKeyboardButton(text="✖ رد", callback_data=f"draft:reject:{draft_id}", style="danger"),
     ]])
     preview = f"✍️ پیش‌نویس برای جواب به «{(message.from_user.first_name if message.from_user else 'کاربر')}»:\n\n{reply}"
     try:
@@ -213,8 +213,8 @@ async def cmd_drafts(message: Message) -> None:
     for row in rows:
         if row.status == "draft":
             kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅ ارسال", callback_data=f"draft:approve:{row.id}"),
-                InlineKeyboardButton(text="✖ رد", callback_data=f"draft:reject:{row.id}"),
+                InlineKeyboardButton(text="✅ ارسال", callback_data=f"draft:approve:{row.id}", style="success"),
+                InlineKeyboardButton(text="✖ رد", callback_data=f"draft:reject:{row.id}", style="danger"),
             ]])
             await message.answer(f"پیش‌نویس #{row.id}\n{(row.draft_text or '')[:1800]}",
                                  reply_markup=kb, parse_mode=None)

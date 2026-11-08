@@ -9,6 +9,7 @@ from core.config import get_settings
 from services import store
 
 router = Router()
+router.message.filter(F.chat.type == "private")
 
 WELCOME = (
     "سلام! 👋\n"
@@ -58,7 +59,8 @@ async def cb_use_case(cb: CallbackQuery) -> None:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP)
+    from handlers.menu import home_keyboard
+    await message.answer(HELP, reply_markup=home_keyboard())
 
 
 @router.message(Command("whoami"))
@@ -152,5 +154,6 @@ async def cmd_resume(message: Message) -> None:
 
 @router.message(Command("forget"))
 async def cmd_forget(message: Message) -> None:
-    await store.delete_user_data(message.from_user.id)
-    await message.answer("داده‌هایت پاک شد. برای شروع دوباره /start.")
+    from handlers.menu import button, keyboard
+    await message.answer("برای حذف داده‌ها، ابتدا صفحهٔ حریم خصوصی را باز کن و تأیید نهایی را انجام بده.",
+                         reply_markup=keyboard([button("حریم خصوصی و حذف داده‌ها", "privacy", "danger")]))

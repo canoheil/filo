@@ -6,12 +6,15 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import SimpleEventIsolation
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
 
 from core.config import get_settings
 from core.logging import setup_logging
 from database.connection import init_db
 from handlers import register_all_handlers
 from middleware.rate_limit import RateLimitMiddleware
+from middleware.menu_state import CommandClearsMenuState
 
 ALLOWED_UPDATES = [
     "message", "callback_query",
@@ -29,11 +32,18 @@ async def main() -> None:
     await init_db()  # v1 convenience; use alembic for schema changes after launch
 
     bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
-    dp = Dispatcher()
+    dp = Dispatcher(events_isolation=SimpleEventIsolation())
+    dp.message.middleware(CommandClearsMenuState())
     dp.message.outer_middleware(RateLimitMiddleware())
     dp.callback_query.outer_middleware(RateLimitMiddleware())
     register_all_handlers(dp)
 
+    await bot.set_my_commands([
+        BotCommand(command="menu", description="منوی اصلی و تنظیمات دستیار"),
+        BotCommand(command="drafts", description="پیش‌نویس‌ها و وضعیت ارسال"),
+        BotCommand(command="cancel", description="لغو ویرایش و بازگشت به منو"),
+        BotCommand(command="help", description="راهنما و دستورات پیشرفته"),
+    ], scope=BotCommandScopeAllPrivateChats())
     logger.info("secretary-bot starting (polling)…")
     await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
 

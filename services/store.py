@@ -227,3 +227,10 @@ async def list_open_drafts(owner_id: int) -> list[AiMessageLog]:
             AiMessageLog.status.in_(["draft", "sending", "blocked", "uncertain"]),
         ).order_by(AiMessageLog.id.desc()).limit(20))
         return list(result.scalars())
+
+
+async def list_user_connections(owner_id: int) -> list[BusinessConnection]:
+    async with get_session() as s:
+        result = await s.execute(select(BusinessConnection).where(
+            BusinessConnection.user_id == owner_id))
+        return list(result.scalars())
