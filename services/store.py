@@ -6,7 +6,7 @@ from sqlalchemy import select, delete, update, case, or_
 from sqlalchemy.exc import IntegrityError
 
 from database.connection import get_session
-from database.models import User, BusinessConnection, Persona, AiMessageLog
+from database.models import User, BusinessConnection, Persona, AiMessageLog, SetupProgress
 from services.quota import utc_today
 
 
@@ -209,6 +209,7 @@ async def delete_user_data(tg_user_id: int) -> None:
             AiMessageLog.connection_id.in_(select(BusinessConnection.connection_id).where(
                 BusinessConnection.user_id == tg_user_id))))
         await s.execute(delete(BusinessConnection).where(BusinessConnection.user_id == tg_user_id))
+        await s.execute(delete(SetupProgress).where(SetupProgress.user_id == tg_user_id))
         await s.execute(delete(Persona).where(Persona.user_id == tg_user_id))
         user = await s.get(User, tg_user_id)
         if user:
@@ -249,5 +250,42 @@ async def reset_damaged_persona_field(owner_id: int, field: str) -> bool:
         result = await s.execute(update(Persona).where(
             Persona.user_id == owner_id, column == getattr(p, field)
         ).values(**{field: DEFAULTS[field]}, updated_at=datetime.utcnow()))
+        await s.commit()
+        return result.rowcount == 1
+
+
+async def get_setup_progress(owner_id: int) -> SetupProgress:
+    async with get_session() as s:
+        await _ensure_row(s, User, owner_id, tg_user_id=owner_id)
+        progress = await _ensure_row(s, SetupProgress, owner_id, user_id=owner_id)
+        await s.commit()
+        await s.refresh(progress)
+        return progress
+
+
+async def mark_setup_step(owner_id: int, step: str) -> None:
+    if step not in {"use_case", "name", "role", "tone", "knowledge_base", "instructions"}:
+        raise ValueError("Unsupported setup step")
+    await get_setup_progress(owner_id)
+    async with get_session() as s:
+        progress = (await s.execute(select(SetupProgress).where(
+            SetupProgress.user_id == owner_id).with_for_update())).scalar_one()
+        progress.completed = list(dict.fromkeys([*progress.completed, step]))
+        await s.commit()
+
+
+async def record_setup_test(owner_id: int, fingerprint: str) -> None:
+    await get_setup_progress(owner_id)
+    async with get_session() as s:
+        await s.execute(update(SetupProgress).where(SetupProgress.user_id == owner_id).values(
+            tested_hash=fingerprint, approved_hash=None))
+        await s.commit()
+
+
+async def approve_setup_test(owner_id: int, fingerprint: str) -> bool:
+    async with get_session() as s:
+        result = await s.execute(update(SetupProgress).where(
+            SetupProgress.user_id == owner_id, SetupProgress.tested_hash == fingerprint
+        ).values(approved_hash=fingerprint))
         await s.commit()
         return result.rowcount == 1

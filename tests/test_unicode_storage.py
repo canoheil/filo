@@ -44,3 +44,19 @@ def test_mysql_migration_sql(monkeypatch):
         assert output.getvalue().count("CHARSET=utf8mb4") == 4
     finally:
         get_settings.cache_clear()
+
+
+def test_setup_table_migration_has_explicit_mysql_unicode(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "mysql+asyncmy://user:pass@localhost/test")
+    get_settings.cache_clear()
+    try:
+        output = StringIO()
+        command.upgrade(Config("alembic.ini", output_buffer=output),
+                        "0002_unicode_storage:0003_setup_progress", sql=True)
+        sql = output.getvalue()
+        assert "CREATE TABLE setup_progress" in sql
+        assert "CHARSET=utf8mb4" in sql
+        assert "COLLATE utf8mb4_unicode_ci" in sql
+        assert "FOREIGN KEY(user_id) REFERENCES users" in sql
+    finally:
+        get_settings.cache_clear()

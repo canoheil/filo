@@ -40,6 +40,7 @@ def keyboard(*rows):
 
 def home_keyboard():
     return keyboard(
+        [button("🌱 آماده‌سازی فیلو؛ شروع / ادامه", "setup:overview", "primary")],
         [button("🎭 شخصیت دستیار", "persona"), button("📚 اطلاعات و قوانین", "knowledge")],
         [button("⚙️ شیوهٔ پاسخ‌دهی", "mode", "primary"), button("✍️ پیش‌نویس‌ها", "drafts")],
         [button("🔗 اتصال تلگرام", "connection"), button("❓ راهنما", "help")],
@@ -57,10 +58,12 @@ async def home(owner_id):
     used = user.quota_used if user.quota_date == utc_today() else 0
     quota = f"{used} از {get_settings().FREE_DAILY_LIMIT} درخواست امروز" if user.plan == "free" else "بدون سقف روزانه در پلن فعلی"
     mode = "خودکار" if p.auto_reply else "پیش‌نویس با تأیید تو"
+    from handlers.setup import overview
+    checklist = await overview(owner_id)
     return (f"فیلو | دستیار تلگرام تو\n\nنام: {display_value(p.name)}\n"
             f"وضعیت: {'⏸ مکث' if p.is_paused else '▶️ فعال'}\n"
             f"پاسخ‌دهی: {mode}\nپلن: {user.plan}\nسهمیه: {quota}\n\n"
-            "از کجا شروع کنیم؟ برای شروع امن، اطلاعات را تکمیل کن و حالت پیش‌نویس را نگه دار.")
+            f"{checklist}\n\nاز دکمهٔ آماده‌سازی برای شروع یا ادامه استفاده کن.")
 
 
 @router.message(Command("start", "menu", "cancel"))
@@ -86,14 +89,17 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
         return
     action = (cb.data or "")[3:]
     pending = (await state.get_data()).get("confirmation")
-    if action in {"autoconfirm", "forgetconfirm"} or action.startswith(("clear:", "repair:")):
+    if action in {"autoconfirm", "forgetconfirm", "setup:start"} or action.startswith(("clear:", "repair:")):
         if pending != action:
             await cb.answer("این تأیید منقضی شده؛ دوباره از منو شروع کن.", show_alert=True)
             return
     await cb.answer()
     await state.clear()  # navigation always cancels an unfinished text edit
     uid = cb.from_user.id
-    if action == "home":
+    if action.startswith("setup:"):
+        from handlers.setup import navigate_setup
+        await navigate_setup(cb, state, action)
+    elif action == "home":
         await show(cb, await home(uid), home_keyboard())
     elif action in {"persona", "knowledge"}:
         p = await store.get_or_create_persona(uid)
@@ -248,7 +254,7 @@ async def sandbox_reply(message: Message, state: FSMContext):
         await message.answer("یک پیام متنی بین ۱ تا ۲۰۰۰ کاراکتر بفرست یا /cancel را بزن.")
         return
     owner_id = message.from_user.id
-    await store.get_or_create_user(owner_id, None)
+    user = await store.get_or_create_user(owner_id, None)
     p = await store.get_or_create_persona(owner_id)
     if any(is_question_only(getattr(p, field)) for field in DEFAULTS):
         await state.clear()
@@ -260,17 +266,22 @@ async def sandbox_reply(message: Message, state: FSMContext):
     if not allowed:
         await message.answer("سهمیهٔ امروز تمام شده؛ آزمایش به سرویس AI ارسال نشد.", reply_markup=home_keyboard())
         return
+    from services.setup import fingerprint
+    request_hash = fingerprint(p, user.use_case)
     try:
         reply = await ai.generate_reply(persona_service.build_system_prompt(p), text)
     except Exception:
         await message.answer("آزمایش پاسخ ناموفق بود؛ کمی بعد دوباره امتحان کن. سهمیهٔ این درخواست مصرف شد.",
                              reply_markup=home_keyboard())
         return
+    await store.record_setup_test(owner_id, request_hash)
     await message.answer("🧪 پاسخ آزمایشی — به مخاطبی ارسال نشده:", parse_mode=None)
     for offset in range(0, len(reply), 1800):
         await message.answer(reply[offset:offset + 1800], parse_mode=None)
     await message.answer("برای اصلاح پاسخ، اطلاعات یا قوانین را ویرایش کن.", reply_markup=keyboard(
-        [button("آزمایش دوباره", "sandbox", "primary"), button("اطلاعات و قوانین", "knowledge")], back()))
+        [button("پاسخ مناسبه؛ ادامه", "setup:approve", "success")],
+        [button("اصلاح اطلاعات / قوانین", "knowledge"), button("اصلاح لحن", "edit:tone")],
+        [button("آزمایش دوباره", "sandbox", "primary")], back()))
 
 
 @router.message(EditPersona.sandbox, ~F.text)

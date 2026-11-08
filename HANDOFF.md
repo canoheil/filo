@@ -100,3 +100,11 @@ bot.py (entry, polling, allowed_updates شامل business_*) · core/config.py �
 - Persona panel offers per-field default reset with one-use confirmation. Store applies owner-scoped compare-and-set only if the current field is still question-only. Healthy/mixed custom values are preserved. Not reconstruction; charset migration still required before saving new values.
 - Sandbox UI state accepts up to 2000 characters, checks daily quota before AI, uses persona prompt and displays reply only in bot DM; no draft storage or business sends. Follows command/navigation cancellation; no chat history. Does not change pause/auto settings.
 - 60 local tests passed including repair ownership/healthy-value preservation, one-use confirmation and sandbox success/quota/error/input-length paths. No production deployment performed here.
+
+## Guided setup / readiness — 2026-11-08
+- Added SetupProgress metadata table and 0003_setup_progress migration (explicit utf8mb4/collation); /forget removes it before deleting users. No AI response/input text stored.
+- Dashboard readiness checklist separates populated fields, successful sandbox generation, user review and stored connection snapshot. Hashes invalidate test/review indicators when effective persona fields/use_case differ.
+- Wizard persists reviewed steps (use_case/name/role/tone/knowledge/rules), supports keep-current, exit/resume and per-step review without resetting values. Pending text input is still memory-only; committed progress survives restart.
+- Successful sandbox records the fingerprint captured before the request and offers explicit review approval; failed/quota-blocked attempts do not mark tests completed.
+- Live connection checks refresh owned snapshots; starting safe draft mode has single-use confirmation and a second live permission check. No business send occurs at setup start.
+- docs/guided-setup.md documents deployment/migration, semantics, limitations and manual tests. 68 local tests passed; live Telegram/MariaDB not executed here.

@@ -116,3 +116,23 @@ async def test_repair_preserves_custom_and_mixed_values(sessions):
     assert not await store.reset_damaged_persona_field(1, "name")
     p = await store.get_or_create_persona(1)
     assert p.name == "فیلو" and p.role == "دستیار من" and p.tone == "لحن؟"
+
+
+@pytest.mark.asyncio
+async def test_setup_progress_persists_and_delete_cleans_metadata(sessions):
+    progress = await store.get_setup_progress(1)
+    assert progress.completed == []
+    await store.mark_setup_step(1, "name")
+    await store.mark_setup_step(1, "name")
+    assert (await store.get_setup_progress(1)).completed == ["name"]
+    assert not await store.approve_setup_test(1, "a" * 64)
+    await store.record_setup_test(1, "a" * 64)
+    assert await store.approve_setup_test(1, "a" * 64)
+    assert not await store.approve_setup_test(1, "b" * 64)
+    await store.record_setup_test(1, "b" * 64)
+    assert (await store.get_setup_progress(1)).approved_hash is None
+    await store.delete_user_data(1)
+    from database.models import SetupProgress
+    async with sessions() as s:
+        assert await s.get(SetupProgress, 1) is None
+        assert await s.get(User, 1) is None
