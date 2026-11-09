@@ -3,6 +3,8 @@ Handlers are transport-agnostic, so a future webhook front (e.g. Cloudflare) is 
 
 import asyncio
 import sys
+from contextlib import suppress
+from services.context import recent_context
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -21,6 +23,12 @@ ALLOWED_UPDATES = [
     "business_connection", "business_message",
     "edited_business_message", "deleted_business_messages",
 ]
+
+
+async def cleanup_context() -> None:
+    while True:
+        await asyncio.sleep(30)
+        recent_context.purge()
 
 
 async def main() -> None:
@@ -45,7 +53,13 @@ async def main() -> None:
         BotCommand(command="help", description="راهنما و دستورات پیشرفته"),
     ], scope=BotCommandScopeAllPrivateChats())
     logger.info("secretary-bot starting (polling)…")
-    await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
+    cleanup = asyncio.create_task(cleanup_context())
+    try:
+        await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
+    finally:
+        cleanup.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup
 
 
 if __name__ == "__main__":

@@ -181,7 +181,7 @@ async def test_sandbox_never_sends_or_saves_drafts(state, monkeypatch, mode):
     if mode == "error":
         generate.side_effect = RuntimeError("private")
     monkeypatch.setattr(menu.ai, "generate_reply", generate)
-    monkeypatch.setattr(menu.persona_service, "build_system_prompt", lambda _: "prompt")
+    monkeypatch.setattr(menu.persona_service, "build_system_prompt", lambda _, **kw: "prompt")
     save = AsyncMock()
     monkeypatch.setattr(menu.store, "save_draft", save)
     msg = SimpleNamespace(text="x" * 2001 if mode == "long" else "سلام", from_user=SimpleNamespace(id=1), answer=AsyncMock())
@@ -210,3 +210,21 @@ async def test_setup_start_requires_pending_confirmation(state, monkeypatch):
     action.assert_awaited_once()
     await menu.navigate(callback("setup:start"), state)
     assert action.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_context_optin_requires_confirmation_and_off_clears(state, monkeypatch):
+    from services.context import recent_context
+    update = AsyncMock()
+    monkeypatch.setattr(menu.store, "update_persona", update)
+    monkeypatch.setattr(menu, "show", AsyncMock())
+    await menu.navigate(callback("context:on"), state)
+    update.assert_not_called()
+    await menu.navigate(callback("context:ask"), state)
+    await menu.navigate(callback("context:on"), state)
+    update.assert_awaited_once_with(1, context_enabled=True)
+    key, ticket, _ = recent_context.begin(1, "c", 2)
+    recent_context.append(key, ticket, "user", "private")
+    await menu.navigate(callback("context:off"), state)
+    assert key not in recent_context.sessions
+    assert update.call_args.kwargs == {"context_enabled": False}

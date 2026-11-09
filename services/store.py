@@ -53,7 +53,7 @@ async def get_or_create_persona(user_id: int) -> Persona:
 
 async def update_persona(user_id: int, **fields) -> Persona:
     allowed = {"name", "role", "tone", "language", "knowledge_base", "instructions",
-               "signature", "auto_reply", "is_paused"}
+               "signature", "auto_reply", "is_paused", "context_enabled"}
     if fields.keys() - allowed:
         raise ValueError("Unsupported persona field")
     async with get_session() as s:
@@ -63,6 +63,9 @@ async def update_persona(user_id: int, **fields) -> Persona:
             **fields, updated_at=datetime.utcnow()))
         await s.commit()
         await s.refresh(p)
+        # Old-role replies should not leak into a newly edited persona's context.
+        from services.context import recent_context
+        recent_context.clear_owner(user_id)
         return p
 
 
@@ -204,6 +207,8 @@ async def quota_hit_and_count(user_id: int, free_limit: int) -> tuple[bool, int]
 
 
 async def delete_user_data(tg_user_id: int) -> None:
+    from services.context import recent_context
+    recent_context.clear_owner(tg_user_id)
     async with get_session() as s:
         await s.execute(delete(AiMessageLog).where(
             AiMessageLog.connection_id.in_(select(BusinessConnection.connection_id).where(

@@ -4,7 +4,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, CopyTextButton
 
 from core.config import get_settings
 from services import store, ai, persona as persona_service
@@ -43,6 +43,7 @@ def home_keyboard():
         [button("🌱 آماده‌سازی فیلو؛ شروع / ادامه", "setup:overview", "primary")],
         [button("🎭 شخصیت دستیار", "persona"), button("📚 اطلاعات و قوانین", "knowledge")],
         [button("⚙️ شیوهٔ پاسخ‌دهی", "mode", "primary"), button("✍️ پیش‌نویس‌ها", "drafts")],
+        [button("🧠 حافظهٔ کوتاه گفتگو", "context")],
         [button("🔗 اتصال تلگرام", "connection"), button("❓ راهنما", "help")],
         [button("🧪 آزمایش پاسخ", "sandbox", "primary"), button("🔒 حریم خصوصی", "privacy")],
     )
@@ -89,7 +90,7 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
         return
     action = (cb.data or "")[3:]
     pending = (await state.get_data()).get("confirmation")
-    if action in {"autoconfirm", "forgetconfirm", "setup:start"} or action.startswith(("clear:", "repair:")):
+    if action in {"autoconfirm", "forgetconfirm", "setup:start", "context:on"} or action.startswith(("clear:", "repair:")):
         if pending != action:
             await cb.answer("این تأیید منقضی شده؛ دوباره از منو شروع کن.", show_alert=True)
             return
@@ -155,6 +156,29 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
     elif action.startswith("use:") and action[4:] in {"business", "personal"}:
         await store.get_or_create_user(uid, None, use_case=action[4:])
         await show(cb, "نوع استفاده ثبت شد؛ این انتخاب اطلاعات فعلی را تغییر نمی‌دهد.", keyboard(back()))
+    elif action == "context":
+        p = await store.get_or_create_persona(uid)
+        await show(cb, f"حافظهٔ کوتاه: {'روشن' if p.context_enabled else 'خاموش'}\n\n"
+                   "در صورت فعال‌سازی، حداکثر ۱۲ پیام اخیر هر گفتگو (تا ۱۲هزار کاراکتر) در حافظهٔ موقت سرور "
+                   "نگه داشته و همراه پیام جدید برای سرویس AI ارسال می‌شود. هر پیام حداکثر ۲۰۰۰ کاراکتر است.\n"
+                   "پس از ۱۵ دقیقه بی‌فعالیتی منقضی می‌شود و با ری‌استارت پاک می‌شود. تاریخچهٔ قبل از فعال‌سازی "
+                   "از تلگرام دریافت نمی‌شود. پیش‌نویس ارسال‌نشده جزو پاسخ‌های دستیار نیست.\n"
+                   "پاک‌کردن حافظهٔ محلی، داده‌ای را از سرویس AI یا تلگرام حذف نمی‌کند.", keyboard(
+                       [button("خاموش و پاک شود", "context:off", "danger") if p.context_enabled
+                        else button("فعال‌سازی با رضایت من…", "context:ask", "primary")],
+                       [button("پاک‌کردن حافظهٔ فعلی", "context:clear")], back()))
+    elif action == "context:ask":
+        await state.update_data(confirmation="context:on")
+        await show(cb, "با نگهداری موقت پیام‌های دریافتی و پاسخ‌های ارسال‌شده و فرستادن چند پیام اخیر به AI موافقی؟\n"
+                   "این انتخاب برای گفتگوهای جدید و جاری حساب متصل تو اعمال می‌شود.", keyboard(
+                       [button("بله، فعال شود", "context:on", "success")], [button("انصراف", "context")]))
+    elif action in {"context:on", "context:off", "context:clear"}:
+        from services.context import recent_context
+        if action != "context:clear":
+            await store.update_persona(uid, context_enabled=action == "context:on")
+        recent_context.clear_owner(uid)
+        await show(cb, "تنظیم حافظه اعمال شد؛ حافظهٔ قبلی پاک شد. درخواست‌هایی که قبلاً به AI رفته‌اند قابل پس‌گرفتن نیستند.",
+                   keyboard([button("تنظیم حافظه", "context")], back()))
     elif action == "mode":
         p = await store.get_or_create_persona(uid)
         await show(cb, "شیوهٔ پاسخ‌دهی\n\nپیش‌نویس: ارسال فقط با تأیید تو.\n"
@@ -180,10 +204,24 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
     elif action == "connection":
         connections = await store.list_user_connections(uid)
         enabled = sum(c.is_enabled for c in connections)
-        await show(cb, f"اتصال‌های فعال ثبت‌شده: {enabled}\n\n"
-                   "در تلگرام به Settings → Account/Profile → Chat Automation برو، "
-                   "بات را انتخاب کن و دسترسی پاسخ را بده. نام مسیر ممکن است با نسخهٔ تلگرام فرق کند.\n"
-                   "اگر هنوز به بات وصل نیستی، فعال‌بودن دستیار به‌تنهایی به معنی اتصال نیست.", keyboard(back()))
+        rows = []
+        try:
+            me = await cb.bot.get_me()
+            username = f"@{me.username}" if me.username else None
+        except Exception:
+            username = None
+        if username:
+            rows.append([InlineKeyboardButton(text="📋 کپی یوزرنیم بات", copy_text=CopyTextButton(text=username))])
+        rows.append([button("بررسی زندهٔ اتصال", "setup:connection")])
+        rows.append(back())
+        await show(cb, f"اتصال‌های فعال ثبت‌شده: {enabled}\n\n" +
+                   (f"یوزرنیم همین بات: {username}\n\n" if username else
+                    "دریافت یوزرنیم ناموفق بود؛ آن را از پروفایل همین بات کپی کن.\n\n") +
+                   "۱. یوزرنیم بات را کپی کن.\n۲. در تلگرام به Settings → Account/Profile → Chat Automation برو.\n"
+                   "۳. یوزرنیم را در بخش انتخاب/جستجوی بات وارد کن و دسترسی پاسخ را بده.\n"
+                   "۴. به اینجا برگرد و بررسی زنده را بزن. نام مسیر ممکن است با نسخهٔ تلگرام فرق کند.\n"
+                   "این عدد snapshot دیتابیس است، نه تضمین اتصال زنده. اگر صفر است درحالی‌که متصل هستی، "
+                   "بررسی زنده و در صورت نیاز قطع و وصل مجدد از تلگرام را امتحان کن.", keyboard(*rows))
     elif action == "help":
         await show(cb, "شروع در سه قدم\n\n۱. شخصیت، اطلاعات و قوانین را تکمیل کن.\n"
                    "۲. حساب آزمایشی را از بخش اتصال وصل کن.\n۳. با حالت پیش‌نویس پاسخ‌ها را بررسی کن.\n\n"
@@ -192,6 +230,7 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
     elif action == "privacy":
         await show(cb, "حریم خصوصی\n\nمتن ورودی برای تولید پاسخ به سرویس AI ارسال می‌شود، "
                    "اما به‌عنوان تاریخچهٔ گفتگو در دیتابیس ما ذخیره نمی‌شود. "
+                   "اگر حافظهٔ کوتاه را فعال کنی، چند پیام اخیر موقتاً در RAM نگه داشته و به AI ارسال می‌شوند. "
                    "پیش‌نویس‌ها تا تصمیم تو یا بررسی خطای ارسال ممکن است نگه داشته شوند.\n"
                    "حذف داده‌ها، پیام‌های قبلی تلگرام یا اطلاعات سرویس AI را پاک نمی‌کند.", keyboard(
                        [button("حذف داده‌های من…", "forgetask", "danger")], back()))
@@ -269,7 +308,7 @@ async def sandbox_reply(message: Message, state: FSMContext):
     from services.setup import fingerprint
     request_hash = fingerprint(p, user.use_case)
     try:
-        reply = await ai.generate_reply(persona_service.build_system_prompt(p), text)
+        reply = await ai.generate_reply(persona_service.build_system_prompt(p, use_case=user.use_case), text)
     except Exception:
         await message.answer("آزمایش پاسخ ناموفق بود؛ کمی بعد دوباره امتحان کن. سهمیهٔ این درخواست مصرف شد.",
                              reply_markup=home_keyboard())

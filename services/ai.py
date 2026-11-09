@@ -14,12 +14,14 @@ class AIError(RuntimeError):
     """Safe diagnostic code only; never wraps a provider exception's text."""
 
 
-async def generate_reply(system_prompt: str, user_text: str) -> str:
+async def generate_reply(system_prompt: str, user_text: str, *, history: list[dict[str, str]] | None = None) -> str:
     s = get_settings()
     payload = {
         "model": s.GEMMA_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
+            *[{"role": item["role"], "content": item["content"]}
+              for item in (history or []) if item.get("role") in {"user", "assistant"}],
             {"role": "user", "content": user_text},
         ],
         "temperature": 0.5,

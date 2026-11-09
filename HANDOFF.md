@@ -108,3 +108,11 @@ bot.py (entry, polling, allowed_updates شامل business_*) · core/config.py �
 - Successful sandbox records the fingerprint captured before the request and offers explicit review approval; failed/quota-blocked attempts do not mark tests completed.
 - Live connection checks refresh owned snapshots; starting safe draft mode has single-use confirmation and a second live permission check. No business send occurs at setup start.
 - docs/guided-setup.md documents deployment/migration, semantics, limitations and manual tests. 68 local tests passed; live Telegram/MariaDB not executed here.
+
+## Opt-in recent conversation context
+- Added context_enabled on Persona with server_default false, migration 0004_recent_context. Consent UI is private/owner-scoped with one-use confirmation; off/clear removes RAM content. No text-history table added.
+- RecentContext: per(owner, connection, chat), 12 messages, 2000 chars/message, 12000 chars/chat, 15-minute idle TTL, global 256-chat LRU. 30-second cleanup task; no expired reads. Tickets prevent writes into revoked/expired sessions.
+- Inbound gets history after quota; only successful Telegram sends append assistant replies (not pending/rejected/uncertain). Owner outgoing updates can contribute; edits/deletions clear chat. Disconnect, persona edits, /forget clear owner cache. Sandbox remains separate.
+- Prompt now discourages repeated introductions and false follow-up promises; small talk separated from unknown business facts. Personal use_case now passed from User to prompt. Setup fingerprint includes prompt revision and context setting.
+- Connection guide uses get_me username and CopyTextButton; stored count explicitly a snapshot. Connection notification no longer promises replies without permissions.
+- docs/recent-context.md documents privacy/deployment/limits and manual tests. No real model/Telegram/MariaDB test or production deployment here.

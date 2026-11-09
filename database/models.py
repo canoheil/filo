@@ -56,6 +56,7 @@ class Persona(Base):
     knowledge_base: Mapped[str] = mapped_column(Text, default="")             # free-form facts owner gives us
     instructions: Mapped[str] = mapped_column(Text, default="")               # owner's custom rules
     signature: Mapped[str] = mapped_column(String(120), default="")           # e.g. "— سکرتر فروشگاه"
+    context_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     auto_reply: Mapped[bool] = mapped_column(Boolean, default=False)          # False => draft-for-approval (safe default)
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False)           # owner hit /pause
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
