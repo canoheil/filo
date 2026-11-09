@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from database.connection import get_session
 from database.models import User, BusinessConnection, Persona, AiMessageLog, SetupProgress
 from services.quota import utc_today
+from services.draft_lifecycle import cutoff, expired
 
 
 async def _ensure_row(session, model, key: int, **values):
@@ -126,7 +127,7 @@ async def take_draft(draft_id: int) -> AiMessageLog | None:
         return row
 
 
-async def claim_draft(draft_id: int, owner_id: int, *, reject: bool = False) -> AiMessageLog | None:
+async def claim_draft(draft_id: int, owner_id: int, *, reject: bool = False, expected_revision: int = 0) -> AiMessageLog | None:
     """Atomically authorize and consume a pending draft before any network I/O.
 
     A sending/uncertain draft is never automatically retried: Telegram sends
@@ -140,6 +141,8 @@ async def claim_draft(draft_id: int, owner_id: int, *, reject: bool = False) -> 
                 AiMessageLog.id == draft_id,
                 AiMessageLog.direction == "draft",
                 AiMessageLog.status == "draft",
+                AiMessageLog.revision == expected_revision,
+                AiMessageLog.created_at > cutoff(),
                 AiMessageLog.connection_id.in_(owned_connections),
             ).values(status="rejected" if reject else "sending",
                      **({"draft_text": None} if reject else {}))
@@ -230,9 +233,13 @@ async def list_open_drafts(owner_id: int) -> list[AiMessageLog]:
         ).where(
             BusinessConnection.user_id == owner_id,
             AiMessageLog.direction == "draft",
-            AiMessageLog.status.in_(["draft", "sending", "blocked", "uncertain"]),
+            AiMessageLog.status.in_(["draft", "sending", "blocked", "uncertain", "expired"]),
         ).order_by(AiMessageLog.id.desc()).limit(20))
-        return list(result.scalars())
+        rows = list(result.scalars())
+        for row in rows:
+            if row.status == "draft" and expired(row):
+                row.status, row.draft_text = "expired", None  # detached view; maintenance persists purge
+        return rows
 
 
 async def list_user_connections(owner_id: int) -> list[BusinessConnection]:
@@ -292,5 +299,29 @@ async def approve_setup_test(owner_id: int, fingerprint: str) -> bool:
         result = await s.execute(update(SetupProgress).where(
             SetupProgress.user_id == owner_id, SetupProgress.tested_hash == fingerprint
         ).values(approved_hash=fingerprint))
+        await s.commit()
+        return result.rowcount == 1
+
+
+async def get_owned_pending_draft(draft_id: int, owner_id: int, revision: int) -> AiMessageLog | None:
+    async with get_session() as s:
+        result = await s.execute(select(AiMessageLog).join(BusinessConnection,
+            BusinessConnection.connection_id == AiMessageLog.connection_id).where(
+                AiMessageLog.id == draft_id, BusinessConnection.user_id == owner_id,
+                AiMessageLog.direction == "draft", AiMessageLog.status == "draft",
+                AiMessageLog.revision == revision, AiMessageLog.created_at > cutoff()))
+        return result.scalar_one_or_none()
+
+
+async def edit_pending_draft(draft_id: int, owner_id: int, revision: int, text: str) -> bool:
+    if not text.strip() or len(text.encode("utf-16-le")) // 2 > 4096:
+        raise ValueError("Invalid draft text")
+    async with get_session() as s:
+        owned = select(BusinessConnection.connection_id).where(BusinessConnection.user_id == owner_id)
+        result = await s.execute(update(AiMessageLog).where(
+            AiMessageLog.id == draft_id, AiMessageLog.connection_id.in_(owned),
+            AiMessageLog.direction == "draft", AiMessageLog.status == "draft",
+            AiMessageLog.revision == revision, AiMessageLog.created_at > cutoff(),
+        ).values(draft_text=text, revision=AiMessageLog.revision + 1))
         await s.commit()
         return result.rowcount == 1

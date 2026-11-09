@@ -7,6 +7,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, CopyTextButton
 
 from core.config import get_settings
+from core.draft_ui import draft_keyboard
+from services.draft_lifecycle import caption
 from services import store, ai, persona as persona_service
 from services.persona_health import DEFAULTS, is_question_only, display_value
 from services.quota import utc_today
@@ -89,15 +91,19 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
         await cb.answer("این منو فقط در گفتگوی خصوصی خودت در دسترس است.", show_alert=True)
         return
     action = (cb.data or "")[3:]
-    pending = (await state.get_data()).get("confirmation")
-    if action in {"autoconfirm", "forgetconfirm", "setup:start", "context:on"} or action.startswith(("clear:", "repair:")):
+    pending_data = await state.get_data()
+    pending = pending_data.get("confirmation")
+    if action in {"autoconfirm", "forgetconfirm", "setup:start", "context:on"} or action == "life:rejectconfirm" or action.startswith(("clear:", "repair:", "life:close:")):
         if pending != action:
             await cb.answer("این تأیید منقضی شده؛ دوباره از منو شروع کن.", show_alert=True)
             return
     await cb.answer()
     await state.clear()  # navigation always cancels an unfinished text edit
     uid = cb.from_user.id
-    if action.startswith("setup:"):
+    if action.startswith("life:"):
+        from handlers.draft_lifecycle import navigate
+        await navigate(cb, state, action, pending_data)
+    elif action.startswith("setup:"):
         from handlers.setup import navigate_setup
         await navigate_setup(cb, state, action)
     elif action == "home":
@@ -248,19 +254,25 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
 
 async def render_drafts(cb, uid):
     rows = await store.list_open_drafts(uid)
-    await show(cb, "پیش‌نویس‌های باز\n\n" + ("آخرین ۲۰ مورد در پیام‌های زیر نمایش داده می‌شوند."
-               if rows else "پیش‌نویس بازی نداری."), keyboard([button("تازه‌سازی", "drafts")], back()))
+    await show(cb, "پیش‌نویس‌های باز\n\n" + (f"آخرین ۲۰ مورد در پیام‌های زیر نمایش داده می‌شوند.\nمهلت ارسال: {get_settings().DRAFT_TTL_MINUTES} دقیقه از ساخت؛ "
+               f"نگهداری متن خطا: {get_settings().DRAFT_ERROR_RETENTION_HOURS} ساعت از ساخت.\n"
+               "منقضی‌ها قابل ارسال نیستند؛ پاک‌سازی دیتابیس پیام‌های قبلی تلگرام را حذف نمی‌کند."
+               if rows else "پیش‌نویس بازی نداری."), keyboard([button("تازه‌سازی", "drafts")],
+                    [button("رد همهٔ پیش‌نویس‌های منتظر…", "life:rejectask", "danger")], back()))
     labels = {"draft": "در انتظار تأیید", "sending": "نیازمند بررسی ارسال",
-              "blocked": "ارسال مسدود", "uncertain": "ارسال نامشخص؛ چت مقصد را بررسی کن"}
+              "blocked": "ارسال مسدود؛ اتصال و مجوز را بررسی کن", "uncertain": "ارسال نامشخص؛ چت مقصد را بررسی کن",
+              "expired": "مهلت تمام شده؛ غیرقابل ارسال"}
     for row in rows:
         markup = None
         if row.status == "draft":
-            markup = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅ ارسال", callback_data=f"draft:approve:{row.id}", style="success"),
-                InlineKeyboardButton(text="✖ رد", callback_data=f"draft:reject:{row.id}", style="danger")]])
-        await cb.message.answer(f"#{row.id} — {labels[row.status]}\n" +
-                                ((row.draft_text or "")[:1800] if row.status == "draft" else ""),
-                                reply_markup=markup, parse_mode=None)
+            markup = draft_keyboard(row.id, getattr(row, "revision", 0))
+        if row.status in {"blocked", "uncertain", "expired"}:
+            markup = keyboard([button("بررسی کردم؛ بستن مورد…", f"life:closeask:{row.id}")],
+                              [button("بررسی اتصال", "setup:connection")])
+        await cb.message.answer(f"#{row.id} — {labels[row.status]} — نسخهٔ {getattr(row, 'revision', 0)}{caption(row)}",
+                                reply_markup=markup if row.status != "draft" else None, parse_mode=None)
+        if row.status == "draft":
+            await cb.message.answer(row.draft_text or "(متن خالی)", reply_markup=markup, parse_mode=None)
 
 
 @router.message(EditPersona.value, F.text, ~F.text.startswith("/"))

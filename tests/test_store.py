@@ -149,3 +149,114 @@ async def test_context_defaults_off_and_persona_edits_clear_cache(sessions):
     await store.update_persona(1, tone="صمیمی")
     assert key not in recent_context.sessions
     assert (await store.get_or_create_persona(1)).context_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_edit_versions_prevent_stale_send_and_wrong_owner(sessions):
+    from database.models import AiMessageLog
+    await store.upsert_connection("edit", 1, {}, 1, True)
+    async with sessions() as s:
+        s.add(AiMessageLog(id=100, connection_id="edit", chat_id=2, message_id=3,
+                           direction="draft", status="draft", draft_text="original"))
+        await s.commit()
+    assert await store.get_owned_pending_draft(100, 99, 0) is None
+    assert not await store.edit_pending_draft(100, 99, 0, "attacker")
+    assert await store.edit_pending_draft(100, 1, 0, "edited")
+    assert not await store.edit_pending_draft(100, 1, 0, "stale edit")
+    assert await store.claim_draft(100, 1) is None  # old unversioned button
+    assert await store.claim_draft(100, 1, reject=True) is None
+    row = await store.claim_draft(100, 1, expected_revision=1)
+    assert row.draft_text == "edited"
+    assert not await store.edit_pending_draft(100, 1, 1, "too late")
+    assert await store.claim_draft(100, 1, expected_revision=1) is None
+
+
+@pytest.mark.asyncio
+async def test_edit_race_with_approval_has_only_one_winner(sessions):
+    from database.models import AiMessageLog
+    await store.upsert_connection("race", 1, {}, 1, True)
+    async with sessions() as s:
+        s.add(AiMessageLog(id=101, connection_id="race", chat_id=2, message_id=3,
+                           direction="draft", status="draft", draft_text="original"))
+        await s.commit()
+    edited, claimed = await asyncio.gather(
+        store.edit_pending_draft(101, 1, 0, "edited"), store.claim_draft(101, 1))
+    assert bool(edited) != bool(claimed)
+    if claimed:
+        assert claimed.draft_text == "original"
+    else:
+        assert (await store.take_draft(101)).draft_text == "edited"
+
+
+@pytest.mark.asyncio
+async def test_expired_draft_cannot_send_or_edit_without_maintenance(sessions):
+    from datetime import datetime, timedelta
+    from database.models import AiMessageLog
+    await store.upsert_connection("ttl", 1, {}, 1, True)
+    async with sessions() as s:
+        s.add(AiMessageLog(id=201, connection_id="ttl", chat_id=2, message_id=1,
+                          direction="draft", status="draft", draft_text="old",
+                          created_at=datetime.utcnow() - timedelta(hours=2)))
+        await s.commit()
+    assert await store.claim_draft(201, 1) is None
+    assert await store.get_owned_pending_draft(201, 1, 0) is None
+    assert not await store.edit_pending_draft(201, 1, 0, "extend")
+    rows = await store.list_open_drafts(1)
+    assert rows[0].status == "expired" and rows[0].draft_text is None
+
+
+@pytest.mark.asyncio
+async def test_maintenance_purges_without_making_uncertain_sendable(sessions, monkeypatch):
+    from datetime import datetime, timedelta
+    from database.models import AiMessageLog
+    from services import draft_lifecycle as lifecycle
+    monkeypatch.setattr(lifecycle, "get_session", store.get_session)
+    now = datetime.utcnow()
+    await store.upsert_connection("purge", 1, {}, 1, True)
+    async with sessions() as s:
+        for id_, status, hours in [(210, "draft", 2), (211, "blocked", 25),
+                                  (212, "uncertain", 25), (213, "sending", 25),
+                                  (214, "sending", 0), (215, "draft", 0)]:
+            s.add(AiMessageLog(id=id_, connection_id="purge", chat_id=2, message_id=id_,
+                direction="draft", status=status, draft_text="private", created_at=now-timedelta(hours=hours)))
+        await s.commit()
+    await lifecycle.maintenance(now)
+    assert (await store.take_draft(210)).status == "expired"
+    for id_ in (210, 211, 212, 213):
+        assert (await store.take_draft(id_)).draft_text is None
+    assert (await store.take_draft(213)).status == "uncertain"
+    assert (await store.take_draft(214)).status == "sending"
+    assert (await store.take_draft(214)).draft_text == "private"
+    assert (await store.take_draft(215)).status == "draft"
+    assert await store.claim_draft(213, 1) is None
+    await lifecycle.maintenance(now)  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_close_and_bulk_reject_are_owned_and_do_not_touch_inflight(sessions, monkeypatch):
+    from datetime import datetime, timedelta
+    from database.models import AiMessageLog
+    from services import draft_lifecycle as lifecycle
+    monkeypatch.setattr(lifecycle, "get_session", store.get_session)
+    await store.upsert_connection("mine-close", 1, {}, 1, True)
+    await store.upsert_connection("other-close", 2, {}, 2, True)
+    before = datetime.utcnow()
+    async with sessions() as s:
+        for id_, connection, status, created in [
+            (220, "mine-close", "draft", before-timedelta(seconds=1)),
+            (221, "mine-close", "draft", before+timedelta(seconds=1)),
+            (222, "mine-close", "sending", before),
+            (223, "mine-close", "uncertain", before),
+            (224, "other-close", "draft", before-timedelta(seconds=1))]:
+            s.add(AiMessageLog(id=id_, connection_id=connection, chat_id=2, message_id=id_,
+                direction="draft", status=status, draft_text="private", created_at=created))
+        await s.commit()
+    assert await lifecycle.reject_pending(1, before) == 1
+    assert (await store.take_draft(220)).draft_text is None
+    assert (await store.take_draft(221)).status == "draft"
+    assert (await store.take_draft(224)).status == "draft"
+    assert not await lifecycle.close_failed(2, 223)
+    assert not await lifecycle.close_failed(1, 222)
+    assert await lifecycle.close_failed(1, 223)
+    assert (await store.take_draft(223)).status == "closed"
+    assert (await store.take_draft(223)).draft_text is None
