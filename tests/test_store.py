@@ -136,3 +136,16 @@ async def test_setup_progress_persists_and_delete_cleans_metadata(sessions):
     async with sessions() as s:
         assert await s.get(SetupProgress, 1) is None
         assert await s.get(User, 1) is None
+
+
+@pytest.mark.asyncio
+async def test_context_defaults_off_and_persona_edits_clear_cache(sessions):
+    from services.context import recent_context
+    p = await store.get_or_create_persona(1)
+    assert p.context_enabled is False
+    await store.update_persona(1, context_enabled=True)
+    key, ticket, _ = recent_context.begin(1, "c", 2)
+    recent_context.append(key, ticket, "user", "private")
+    await store.update_persona(1, tone="صمیمی")
+    assert key not in recent_context.sessions
+    assert (await store.get_or_create_persona(1)).context_enabled is True

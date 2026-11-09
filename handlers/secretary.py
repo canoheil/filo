@@ -10,6 +10,7 @@ from aiogram.types import BusinessConnection, Message, CallbackQuery, InlineKeyb
 from core.config import get_settings
 from core.logging import setup_logging
 from services import store, persona as persona_svc, ai
+from services.context import recent_context
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 logger = setup_logging(get_settings().LOG_LEVEL)
@@ -19,6 +20,8 @@ router = Router()
 @router.business_connection()
 async def on_business_connection(event: BusinessConnection, bot: Bot) -> None:
     await store.get_or_create_user(event.user.id, event.user.username)
+    if not event.is_enabled:
+        recent_context.clear_owner(event.user.id)
     rights = event.rights.model_dump() if event.rights else None
     await store.upsert_connection(
         connection_id=event.id,
@@ -29,7 +32,11 @@ async def on_business_connection(event: BusinessConnection, bot: Bot) -> None:
     )
     try:
         if event.is_enabled:
-            await bot.send_message(event.user.id, "🔗 فیلو وصل شد! از حالا پیام‌های دایرکتت را می‌توانم جواب بدهم.\nبا /menu تنظیمات دستیار را ببین.")
+            await bot.send_message(event.user.id,
+                "🔗 اتصال فیلو ثبت شد.\n" +
+                ("مجوز پاسخ فعال است؛ ارسال تابع حالت پیش‌نویس/خودکار و مکث توست."
+                 if event.rights and event.rights.can_reply else "مجوز پاسخ فعال نیست؛ دسترسی اتصال را بررسی کن.") +
+                "\nبا /menu تنظیمات و بررسی اتصال را ببین.")
         else:
             await bot.send_message(event.user.id, "🔌 اتصال از طرف تلگرام قطع شد. اگر اشتباه است دوباره از Chat Automation وصل کن.")
     except Exception as e:  # owner may have blocked the bot in DM
@@ -51,7 +58,11 @@ async def on_business_message(message: Message, bot: Bot) -> None:
     if getattr(message, "sender_business_bot", None):
         return
     sender_id = message.from_user.id if message.from_user else None
-    if sender_id == conn.user_id:  # owner's own outgoing message echoed back
+    if sender_id == conn.user_id:  # real owner replies may supply context, never trigger AI
+        p = await store.get_or_create_persona(conn.user_id)
+        if getattr(p, "context_enabled", False):
+            recent_context.sent(conn.user_id, connection_id, message.chat.id,
+                                message.text or message.caption or "")
         return
     text = (message.text or message.caption or "").strip()
     if not text:
@@ -78,9 +89,19 @@ async def on_business_message(message: Message, bot: Bot) -> None:
         logger.info("quota overflow user=%s", user.tg_user_id)
         return
 
-    system_prompt = persona_svc.build_system_prompt(p)
+    if getattr(p, "context_enabled", False):
+        # Recheck consent after quota I/O; do not start caching using a stale flag.
+        p = await store.get_or_create_persona(conn.user_id)
+    system_prompt = persona_svc.build_system_prompt(p, use_case=getattr(user, "use_case", "business"))
+    history = None
+    if getattr(p, "context_enabled", False):
+        key, ticket, history = recent_context.begin(conn.user_id, connection_id, message.chat.id)
+        recent_context.append(key, ticket, "user", text)
+    else:
+        recent_context.clear_owner(conn.user_id)
     try:
-        reply = await ai.generate_reply(system_prompt, text)
+        reply = (await ai.generate_reply(system_prompt, text, history=history)
+                 if history is not None else await ai.generate_reply(system_prompt, text))
     except Exception as e:
         logger.error("AI failure type=%s", type(e).__name__)
         try:
@@ -180,6 +201,9 @@ async def _deliver_draft(row, draft_id: int, owner_id: int, bot: Bot) -> str:
         await store.set_draft_delivery_state(draft_id, "uncertain")
         return "⚠️ وضعیت ارسال نامشخص است؛ قبل از هر ارسال دیگری چت مقصد را بررسی کن."
 
+    # Only a confirmed Telegram send may become an assistant context message.
+    if getattr(current, "context_enabled", False):
+        recent_context.sent(owner_id, row.connection_id, row.chat_id, row.draft_text or "")
     # Persist success before UI work: an edit failure must never allow a resend.
     await store.finish_draft(draft_id, "sent")
     await store.log_outbound(row.connection_id, row.chat_id, sent.message_id, "ok")
@@ -218,3 +242,14 @@ async def cmd_drafts(message: Message) -> None:
             ]])
             await message.answer(f"پیش‌نویس #{row.id}\n{(row.draft_text or '')[:1800]}",
                                  reply_markup=kb, parse_mode=None)
+
+
+@router.edited_business_message()
+async def clear_edited_context(message: Message):
+    if message.business_connection_id:
+        recent_context.clear_chat(message.business_connection_id, message.chat.id)
+
+
+@router.deleted_business_messages()
+async def clear_deleted_context(event):
+    recent_context.clear_chat(event.business_connection_id, event.chat.id)

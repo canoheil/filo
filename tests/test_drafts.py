@@ -99,3 +99,31 @@ async def test_recovery_ui_has_no_resend_for_uncertain(monkeypatch):
     assert "hidden" not in message.answer.call_args_list[0].args[0]
     kb = message.answer.call_args_list[1].kwargs["reply_markup"]
     assert kb.inline_keyboard[0][0].callback_data == "draft:approve:2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("success", [True, False])
+async def test_context_records_only_successfully_sent_reply(monkeypatch, success):
+    from handlers.secretary import _deliver_draft
+    from services.context import recent_context
+    recent_context.clear_owner(1)
+    key, ticket, _ = recent_context.begin(1, "c", 2)
+    recent_context.append(key, ticket, "user", "question")
+    monkeypatch.setattr(store, "get_or_create_persona", AsyncMock(
+        return_value=SimpleNamespace(is_paused=False, context_enabled=True)))
+    monkeypatch.setattr(store, "finish_draft", AsyncMock())
+    monkeypatch.setattr(store, "log_outbound", AsyncMock())
+    monkeypatch.setattr(store, "set_draft_delivery_state", AsyncMock())
+    bot = AsyncMock()
+    bot.get_business_connection.return_value = SimpleNamespace(
+        user=SimpleNamespace(id=1), is_enabled=True, rights=SimpleNamespace(can_reply=True))
+    bot.send_message.return_value = SimpleNamespace(message_id=4)
+    if not success:
+        bot.send_message.side_effect = TimeoutError()
+    row = SimpleNamespace(connection_id="c", chat_id=2, draft_text="answer")
+    try:
+        await _deliver_draft(row, 1, 1, bot)
+        messages = recent_context.begin(1, "c", 2)[2]
+        assert any(m["role"] == "assistant" for m in messages) == success
+    finally:
+        recent_context.clear_owner(1)

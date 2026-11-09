@@ -10,6 +10,8 @@ def fingerprint(persona, use_case):
     fields = ("name", "role", "tone", "language", "knowledge_base", "instructions", "signature")
     data = {key: getattr(persona, key) for key in fields}
     data["use_case"] = use_case
+    data["prompt_revision"] = "2"
+    data["context_enabled"] = bool(getattr(persona, "context_enabled", False))
     return hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 

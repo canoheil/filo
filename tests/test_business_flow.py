@@ -21,7 +21,7 @@ async def test_message_pipeline(monkeypatch, scenario):
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(secretary.store, name, mock)
-    monkeypatch.setattr(secretary.persona_svc, "build_system_prompt", lambda _: "system")
+    monkeypatch.setattr(secretary.persona_svc, "build_system_prompt", lambda _, **kw: "system")
     generate = AsyncMock(return_value="پاسخ *بدون قالب‌بندی*")
     if scenario == "ai_error":
         generate.side_effect = secretary.ai.AIError("http_503")
@@ -62,7 +62,7 @@ async def test_auto_pipeline(monkeypatch, mode):
     for name, mock in {"save_draft": save, "claim_draft": claim, "finish_draft": finish,
                        "set_draft_delivery_state": state, "log_outbound": log}.items():
         monkeypatch.setattr(secretary.store, name, mock)
-    monkeypatch.setattr(secretary.persona_svc, "build_system_prompt", lambda _: "system")
+    monkeypatch.setattr(secretary.persona_svc, "build_system_prompt", lambda _, **kw: "system")
     monkeypatch.setattr(secretary.ai, "generate_reply", AsyncMock(return_value="answer"))
     bot = AsyncMock()
     bot.get_business_connection.return_value = SimpleNamespace(
@@ -87,3 +87,30 @@ async def test_auto_pipeline(monkeypatch, mode):
         finish.assert_not_called()
         customer_sends = [c for c in bot.send_message.call_args_list if c.kwargs.get("chat_id") == 2]
         assert len(customer_sends) == (1 if mode == "timeout" else 0)
+
+
+@pytest.mark.asyncio
+async def test_optin_context_uses_previous_inbound_but_not_pending_draft(monkeypatch):
+    from services.context import recent_context
+    recent_context.clear_owner(1)
+    p = SimpleNamespace(is_paused=False, auto_reply=False, context_enabled=True)
+    monkeypatch.setattr(secretary.store, "get_connection", AsyncMock(return_value=SimpleNamespace(user_id=1, is_enabled=True)))
+    monkeypatch.setattr(secretary.store, "get_or_create_persona", AsyncMock(return_value=p))
+    monkeypatch.setattr(secretary.store, "get_or_create_user", AsyncMock(return_value=SimpleNamespace(tg_user_id=1)))
+    monkeypatch.setattr(secretary.store, "quota_hit_and_count", AsyncMock(return_value=(True, 1)))
+    monkeypatch.setattr(secretary.store, "log_inbound_once", AsyncMock(return_value=True))
+    monkeypatch.setattr(secretary.store, "save_draft", AsyncMock(return_value=1))
+    monkeypatch.setattr(secretary.persona_svc, "build_system_prompt", lambda _, **kw: "rules")
+    generate = AsyncMock(return_value="UNSENT")
+    monkeypatch.setattr(secretary.ai, "generate_reply", generate)
+    message = SimpleNamespace(business_connection_id="c", sender_business_bot=None,
+        from_user=SimpleNamespace(id=2, first_name="Test"), text="first", caption=None,
+        chat=SimpleNamespace(id=2), message_id=1)
+    try:
+        await secretary.on_business_message(message, AsyncMock())
+        message.text, message.message_id = "second", 2
+        await secretary.on_business_message(message, AsyncMock())
+        assert generate.call_args.kwargs["history"] == [{"role": "user", "content": "first"}]
+        assert "UNSENT" not in str(recent_context.begin(1, "c", 2)[2])
+    finally:
+        recent_context.clear_owner(1)
