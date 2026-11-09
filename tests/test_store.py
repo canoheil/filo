@@ -30,6 +30,8 @@ async def sessions(tmp_path, monkeypatch):
             yield s
 
     monkeypatch.setattr(store, "get_session", session)
+    from services import schedule
+    monkeypatch.setattr(schedule, "get_session", session)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield factory
@@ -289,7 +291,7 @@ async def test_chat_controls_owner_isolation_and_handoff(sessions, monkeypatch):
     assert again.handoff_until == until and again.routing_revision == version
     await controls.set_chat(1, first.id, False)
     assert await controls.check(1, "chat-a", 20) == "active"
-    assert await controls.version(1, "chat-a", 20) > version
+    assert (await controls.version(1, "chat-a", 20))[0] > version
     await store.delete_user_data(1)
     assert await controls.get_chat(1, first.id) is None
     assert await controls.get_chat(1, second.id) is None
@@ -314,3 +316,26 @@ async def test_handoff_defaults_off_and_blocks_existing_pending(sessions, monkey
     assert await store.claim_draft(300, 1) is None
     with pytest.raises(ValueError):
         await store.update_persona(1, handoff_minutes=999)
+
+
+@pytest.mark.asyncio
+async def test_schedule_is_default_off_owned_and_versioned(sessions, monkeypatch):
+    from services import schedule, chat_control as controls
+    monkeypatch.setattr(controls, "get_session", store.get_session)
+    await store.upsert_connection("hours", 1, {}, 1, True)
+    assert (await store.get_reply_schedule(1)).enabled is False
+    with pytest.raises(ValueError):
+        await store.update_reply_schedule(1, enabled=True)
+    current = await store.update_reply_schedule(1, timezone="Asia/Tehran", days=[5,6,0,1,2])
+    token = await controls.version(1, "hours", 20)
+    await store.update_reply_schedule(1, enabled=True, expected_revision=current.revision)
+    assert await controls.version(1, "hours", 20) != token
+    with pytest.raises(ValueError):
+        await store.update_reply_schedule(1, enabled=True, expected_revision=current.revision)
+    assert await schedule.read(2) is None
+    assert (await schedule.read(1)).enabled
+    with pytest.raises(ValueError):
+        await store.update_reply_schedule(1, days=[])
+    assert (await schedule.read(1)).days == [5,6,0,1,2]
+    await store.delete_user_data(1)
+    assert await schedule.read(1) is None

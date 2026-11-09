@@ -156,9 +156,10 @@ def routing_defaults(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_takeover_blocks_final_send(monkeypatch):
+@pytest.mark.parametrize("routing", ["owner_takeover", "outside_hours"])
+async def test_takeover_blocks_final_send(monkeypatch, routing):
     from handlers import secretary
-    monkeypatch.setattr(secretary.chat_control, "check", AsyncMock(return_value="owner_takeover"))
+    monkeypatch.setattr(secretary.chat_control, "check", AsyncMock(return_value=routing))
     monkeypatch.setattr(store, "get_or_create_persona", AsyncMock(return_value=SimpleNamespace(is_paused=False)))
     state = AsyncMock()
     monkeypatch.setattr(store, "set_draft_delivery_state", state)

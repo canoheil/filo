@@ -45,6 +45,7 @@ def home_keyboard():
         [button("🌱 آماده‌سازی فیلو؛ شروع / ادامه", "setup:overview", "primary")],
         [button("🎭 شخصیت دستیار", "persona"), button("📚 اطلاعات و قوانین", "knowledge")],
         [button("⚙️ شیوهٔ پاسخ‌دهی", "mode", "primary"), button("✍️ پیش‌نویس‌ها", "drafts")],
+        [button("🕒 ساعت پاسخ‌گویی", "hours:home")],
         [button("🧠 حافظهٔ کوتاه گفتگو", "context"), button("💬 کنترل گفتگوها", "chats:list:0")],
         [button("🔗 اتصال تلگرام", "connection"), button("❓ راهنما", "help")],
         [button("🧪 آزمایش پاسخ", "sandbox", "primary"), button("🔒 حریم خصوصی", "privacy")],
@@ -63,9 +64,13 @@ async def home(owner_id):
     mode = "خودکار" if p.auto_reply else "پیش‌نویس با تأیید تو"
     from handlers.setup import overview
     checklist = await overview(owner_id)
+    from services.schedule import read, allowed
+    hours = await read(owner_id)
+    hours_label = ("بدون محدودیت ساعت" if hours is None or not hours.enabled else
+                   f"{'داخل بازه' if allowed(hours) else 'خارج از ساعت؛ سکوت'} ({hours.timezone})")
     return (f"فیلو | دستیار تلگرام تو\n\nنام: {display_value(p.name)}\n"
             f"وضعیت: {'⏸ مکث' if p.is_paused else '▶️ فعال'}\n"
-            f"پاسخ‌دهی: {mode}\nپلن: {user.plan}\nسهمیه: {quota}\n\n"
+            f"پاسخ‌دهی: {mode}\nساعت پاسخ: {hours_label}\nپلن: {user.plan}\nسهمیه: {quota}\n\n"
             f"{checklist}\n\nاز دکمهٔ آماده‌سازی برای شروع یا ادامه استفاده کن.")
 
 
@@ -93,14 +98,17 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
     action = (cb.data or "")[3:]
     pending_data = await state.get_data()
     pending = pending_data.get("confirmation")
-    if action in {"autoconfirm", "forgetconfirm", "setup:start", "context:on"} or action == "life:rejectconfirm" or action.startswith(("clear:", "repair:", "life:close:")):
+    if action in {"autoconfirm", "forgetconfirm", "setup:start", "context:on", "hours:on"} or action == "life:rejectconfirm" or action.startswith(("clear:", "repair:", "life:close:")):
         if pending != action:
             await cb.answer("این تأیید منقضی شده؛ دوباره از منو شروع کن.", show_alert=True)
             return
     await cb.answer()
     await state.clear()  # navigation always cancels an unfinished text edit
     uid = cb.from_user.id
-    if action.startswith("chats:"):
+    if action.startswith("hours:"):
+        from handlers.schedule import navigate
+        await navigate(cb, state, action, pending_data)
+    elif action.startswith("chats:"):
         from handlers.chat_control import navigate
         await navigate(cb, state, action)
     elif action.startswith("life:"):
@@ -263,7 +271,7 @@ async def render_drafts(cb, uid):
                if rows else "پیش‌نویس بازی نداری."), keyboard([button("تازه‌سازی", "drafts")],
                     [button("رد همهٔ پیش‌نویس‌های منتظر…", "life:rejectask", "danger")], back()))
     labels = {"draft": "در انتظار تأیید", "sending": "نیازمند بررسی ارسال",
-              "blocked": "ارسال مسدود؛ اتصال و مجوز را بررسی کن", "uncertain": "ارسال نامشخص؛ چت مقصد را بررسی کن",
+              "blocked": "ارسال مسدود؛ ساعت پاسخ، مکث و دسترسی را بررسی کن", "uncertain": "ارسال نامشخص؛ چت مقصد را بررسی کن",
               "expired": "مهلت تمام شده؛ غیرقابل ارسال"}
     for row in rows:
         markup = None
@@ -271,7 +279,7 @@ async def render_drafts(cb, uid):
             markup = draft_keyboard(row.id, getattr(row, "revision", 0))
         if row.status in {"blocked", "uncertain", "expired"}:
             markup = keyboard([button("بررسی کردم؛ بستن مورد…", f"life:closeask:{row.id}")],
-                              [button("بررسی اتصال", "setup:connection")])
+                              [button("بررسی اتصال", "setup:connection"), button("ساعت پاسخ", "hours:home")])
         await cb.message.answer(f"#{row.id} — {labels[row.status]} — نسخهٔ {getattr(row, 'revision', 0)}{caption(row)}",
                                 reply_markup=markup if row.status != "draft" else None, parse_mode=None)
         if row.status == "draft":

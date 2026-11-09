@@ -115,3 +115,16 @@ class ChatControl(Base):
     owner_message_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     last_reason: Mapped[str] = mapped_column(String(32), default="active")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ReplySchedule(Base):
+    """Owner-wide local weekly hours; disabled unless explicitly enabled."""
+    __tablename__ = "reply_schedules"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_user_id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    timezone: Mapped[str] = mapped_column(String(64), default="")
+    days: Mapped[list] = mapped_column(JSON, default=list)
+    start_minute: Mapped[int] = mapped_column(Integer, default=540)
+    end_minute: Mapped[int] = mapped_column(Integer, default=1020)
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

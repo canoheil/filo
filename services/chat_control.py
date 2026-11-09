@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from database.connection import get_session
+from services import schedule
 from database.models import ChatControl, BusinessConnection, AiMessageLog
 
 
@@ -37,11 +38,14 @@ def reason(row, now=None):
 
 
 async def check(owner, connection, chat):
-    return reason(await ensure(owner, connection, chat))
+    local = reason(await ensure(owner, connection, chat))
+    if local != "active":
+        return local
+    return "active" if await schedule.check(owner) else "outside_hours"
 
 
 async def note(owner, connection, chat, value):
-    if value not in {"active", "chat_paused", "owner_takeover", "global_paused", "quota", "unavailable", "reply_superseded"}:
+    if value not in {"active", "chat_paused", "owner_takeover", "global_paused", "quota", "unavailable", "reply_superseded", "outside_hours"}:
         raise ValueError("Invalid reason")
     async with get_session() as s:
         await s.execute(update(ChatControl).where(
@@ -94,4 +98,4 @@ async def set_chat(owner, id_, paused):
 
 async def version(owner, connection, chat):
     row = await ensure(owner, connection, chat)
-    return row.routing_revision if row else None
+    return (row.routing_revision, await schedule.version(owner)) if row else None

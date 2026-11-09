@@ -249,3 +249,18 @@ async def test_lifecycle_confirmations_are_single_use(state, monkeypatch):
     await menu.navigate(callback("life:rejectconfirm"), state)
     await menu.navigate(callback("life:rejectconfirm"), state)
     reject.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_schedule_enable_needs_one_use_confirmation(state, monkeypatch):
+    from handlers import schedule
+    navigate = AsyncMock()
+    monkeypatch.setattr(schedule, "navigate", navigate)
+    await menu.navigate(callback("hours:on"), state)
+    navigate.assert_not_called()
+    await state.update_data(confirmation="hours:on", schedule_revision=3)
+    await menu.navigate(callback("hours:on"), state)
+    navigate.assert_awaited_once()
+    assert navigate.call_args.args[-1]["schedule_revision"] == 3
+    await menu.navigate(callback("hours:on"), state)
+    assert navigate.await_count == 1

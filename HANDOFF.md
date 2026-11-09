@@ -138,3 +138,11 @@ bot.py (entry, polling, allowed_updates شامل business_*) · core/config.py �
 - Inbound routing guard precedes quota/AI; post-AI routing revision discards superseded generation. Final draft delivery rechecks local routing and fails closed; no automatic retries. Cannot recall already-started Telegram sends.
 - Chat scopes and queries revalidate ownership. Only numeric user FK used to avoid legacy connection_id charset FK incompatibility; connection ownership validated in service.
 - docs/chat-controls.md includes migration/rollback effects and server test checklist. Working-hours/timezone scheduling intentionally deferred to next phase.
+
+## Weekly reply hours / explicit timezone
+- Added default-off ReplySchedule per owner via 0008_reply_schedule, explicit utf8mb4/collation, /forget cleanup. No message content stored. tzdata added for shared hosts lacking system zone data.
+- Inline hours panel: explicit IANA timezone presets/custom, weekday selection, shared daily/overnight interval, validated text input, single-use version-checked enable confirmation and disable. Pending input is memory-only; stored settings survive restart.
+- Local clock evaluation uses aware UTC->ZoneInfo, inclusive start/exclusive end; overnight spans selected START day into next day. DST repeats both obey wall-clock hours; nonexistent local times do not occur.
+- Shared chat routing enforces schedule before quota/AI and final delivery. Schedule revision is part of generation token; changed settings invalidate in-flight AI reply. Dashboard/chat panel expose current hours; outside_hours is a historical suppression reason.
+- No outside-hours fixed reply, queue/backfill or multi-window-per-day scheduling. Existing pauses/owner takeover/quota/permissions remain independent; sandbox unaffected.
+- docs/reply-hours.md covers deployment, DST semantics, rollback risks and server test checklist. Local tests added; no live Telegram/MariaDB or production deployment performed here.

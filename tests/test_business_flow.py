@@ -124,7 +124,7 @@ def routing_defaults(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("routing", ["chat_paused", "owner_takeover"])
+@pytest.mark.parametrize("routing", ["chat_paused", "owner_takeover", "outside_hours"])
 async def test_suppressed_chat_never_spends_quota(monkeypatch, routing):
     monkeypatch.setattr(secretary.chat_control, "check", AsyncMock(return_value=routing))
     monkeypatch.setattr(secretary.store, "get_connection", AsyncMock(
