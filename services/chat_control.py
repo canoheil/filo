@@ -45,7 +45,7 @@ async def check(owner, connection, chat):
 
 
 async def note(owner, connection, chat, value):
-    if value not in {"active", "chat_paused", "owner_takeover", "global_paused", "quota", "unavailable", "reply_superseded", "outside_hours"}:
+    if value not in {"active", "chat_paused", "owner_takeover", "global_paused", "quota", "unavailable", "reply_superseded", "outside_hours", "membership", "membership_error"}:
         raise ValueError("Invalid reason")
     async with get_session() as s:
         await s.execute(update(ChatControl).where(

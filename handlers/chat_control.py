@@ -3,7 +3,7 @@ from datetime import datetime
 from core.draft_ui import valid_number
 from services import chat_control as controls, store
 
-LABELS = {"outside_hours": "خارج از ساعت پاسخ‌گویی", "active": "فعال؛ مانع محلی ندارد", "chat_paused": "مکث همین گفتگو",
+LABELS = {"membership": "عضویت در کانال‌ها تأیید نشده", "membership_error": "بررسی عضویت کانال‌ها ناموفق", "outside_hours": "خارج از ساعت پاسخ‌گویی", "active": "فعال؛ مانع محلی ندارد", "chat_paused": "مکث همین گفتگو",
           "owner_takeover": "تحویل موقت به مالک", "global_paused": "مکث کلی",
           "quota": "سهمیه تمام شده", "reply_superseded": "پاسخ آماده‌شده پس از تغییر کنترل کنار گذاشته شد", "unavailable": "اتصال در دسترس نیست"}
 

@@ -128,3 +128,77 @@ class ReplySchedule(Base):
     start_minute: Mapped[int] = mapped_column(Integer, default=540)
     end_minute: Mapped[int] = mapped_column(Integer, default=1020)
     revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class AiRequest(Base):
+    """One logical quota reservation, including sandbox. No prompts or raw errors."""
+    __tablename__ = "ai_requests"
+    __table_args__ = (
+        Index("ix_ai_requests_owner_created", "user_id", "created_at"),
+        {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+    request_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_user_id"))
+    source: Mapped[str] = mapped_column(String(16))
+    state: Mapped[str] = mapped_column(String(16))
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class MembershipPolicy(Base):
+    __tablename__ = "membership_policy"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class RequiredChannelRow(Base):
+    __tablename__ = "required_channels"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(64), unique=True)
+    join_url: Mapped[str] = mapped_column(String(255))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class AdminAudit(Base):
+    __tablename__ = "admin_audit"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_id: Mapped[int] = mapped_column(BigInteger)
+    action: Mapped[str] = mapped_column(String(32))
+    target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BroadcastSubscriber(Base):
+    """Only private bot initiators; never populated from business updates."""
+    __tablename__ = "broadcast_subscribers"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class BroadcastJob(Base):
+    __tablename__ = "broadcast_jobs"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_id: Mapped[int] = mapped_column(BigInteger)
+    source_chat_id: Mapped[int] = mapped_column(BigInteger)
+    source_message_id: Mapped[int] = mapped_column(BigInteger)
+    state: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class BroadcastTarget(Base):
+    __tablename__ = "broadcast_targets"
+    __table_args__ = (
+        Index("ix_broadcast_target_state", "job_id", "state", "user_id"),
+        {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+    job_id: Mapped[int] = mapped_column(Integer, ForeignKey("broadcast_jobs.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, index=True)
+    state: Mapped[str] = mapped_column(String(16), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)

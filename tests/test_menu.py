@@ -184,7 +184,8 @@ async def test_sandbox_never_sends_or_saves_drafts(state, monkeypatch, mode):
     monkeypatch.setattr(menu.persona_service, "build_system_prompt", lambda _, **kw: "prompt")
     save = AsyncMock()
     monkeypatch.setattr(menu.store, "save_draft", save)
-    msg = SimpleNamespace(text="x" * 2001 if mode == "long" else "سلام", from_user=SimpleNamespace(id=1), answer=AsyncMock())
+    msg = SimpleNamespace(text="x" * 2001 if mode == "long" else "سلام", from_user=SimpleNamespace(id=1),
+                          chat=SimpleNamespace(id=1), message_id=1, answer=AsyncMock())
     await menu.sandbox_reply(msg, state)
     save.assert_not_called()
     assert all("business_connection_id" not in call.kwargs for call in msg.answer.call_args_list)
@@ -264,3 +265,8 @@ async def test_schedule_enable_needs_one_use_confirmation(state, monkeypatch):
     assert navigate.call_args.args[-1]["schedule_revision"] == 3
     await menu.navigate(callback("hours:on"), state)
     assert navigate.await_count == 1
+
+
+@pytest.fixture(autouse=True)
+def telemetry_defaults(monkeypatch):
+    monkeypatch.setattr(menu.usage, "finish", AsyncMock())

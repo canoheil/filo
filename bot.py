@@ -17,6 +17,8 @@ from database.connection import init_db
 from handlers import register_all_handlers
 from middleware.rate_limit import RateLimitMiddleware
 from middleware.menu_state import CommandClearsMenuState
+from middleware.membership import MembershipMiddleware
+from middleware.broadcast_audience import BroadcastAudienceMiddleware
 
 ALLOWED_UPDATES = [
     "message", "callback_query",
@@ -49,12 +51,19 @@ async def main() -> None:
         sys.exit("BOT_TOKEN is missing — copy .env.example to .env and fill it in.")
 
     await init_db()  # v1 convenience; use alembic for schema changes after launch
+    from services import admin
+    from services.membership import membership
+    await admin.initialize()
+    membership.channel_loader = admin.snapshot
 
     bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
     dp = Dispatcher(events_isolation=SimpleEventIsolation())
     dp.message.middleware(CommandClearsMenuState())
     dp.message.outer_middleware(RateLimitMiddleware())
     dp.callback_query.outer_middleware(RateLimitMiddleware())
+    dp.message.outer_middleware(BroadcastAudienceMiddleware())
+    dp.message.outer_middleware(MembershipMiddleware())
+    dp.callback_query.outer_middleware(MembershipMiddleware())
     register_all_handlers(dp)
 
     await bot.set_my_commands([
@@ -64,13 +73,19 @@ async def main() -> None:
         BotCommand(command="help", description="راهنما و دستورات پیشرفته"),
     ], scope=BotCommandScopeAllPrivateChats())
     logger.info("secretary-bot starting (polling)…")
+    from services import broadcast
+    await broadcast.recover()
     cleanup = asyncio.create_task(cleanup_context())
     drafts_cleanup = asyncio.create_task(cleanup_drafts())
+    broadcaster = asyncio.create_task(broadcast.worker(bot))
     try:
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
     finally:
+        broadcaster.cancel()
         cleanup.cancel()
         drafts_cleanup.cancel()
+        with suppress(asyncio.CancelledError):
+            await broadcaster
         with suppress(asyncio.CancelledError):
             await cleanup
         with suppress(asyncio.CancelledError):

@@ -60,3 +60,49 @@ def test_setup_table_migration_has_explicit_mysql_unicode(monkeypatch):
         assert "FOREIGN KEY(user_id) REFERENCES users" in sql
     finally:
         get_settings.cache_clear()
+
+
+def test_usage_migration_mysql_sql(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "mysql+asyncmy://user:pass@localhost/test")
+    get_settings.cache_clear()
+    try:
+        output = StringIO()
+        command.upgrade(Config("alembic.ini", output_buffer=output), "0008_reply_schedule:0009_usage_health", sql=True)
+        sql = output.getvalue()
+        assert "CREATE TABLE ai_requests" in sql
+        assert "CHARSET=utf8mb4" in sql
+        assert "ix_ai_requests_owner_created" in sql
+        assert "request_key" in sql and "FOREIGN KEY(user_id) REFERENCES users" in sql
+    finally:
+        get_settings.cache_clear()
+
+
+def test_admin_migration_mysql_sql(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "mysql+asyncmy://user:pass@localhost/test")
+    get_settings.cache_clear()
+    try:
+        output = StringIO()
+        command.upgrade(Config("alembic.ini", output_buffer=output), "0009_usage_health:0010_admin_channels", sql=True)
+        sql = output.getvalue()
+        for table in ("membership_policy", "required_channels", "admin_audit"):
+            assert f"CREATE TABLE {table}" in sql
+        assert sql.count("CHARSET=utf8mb4") == 3
+        assert sql.count("COLLATE utf8mb4_unicode_ci") == 3
+    finally:
+        get_settings.cache_clear()
+
+
+def test_broadcast_migration_mysql_sql(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "mysql+asyncmy://user:pass@localhost/test")
+    get_settings.cache_clear()
+    try:
+        output = StringIO()
+        command.upgrade(Config("alembic.ini", output_buffer=output), "0010_admin_channels:0011_broadcast", sql=True)
+        sql = output.getvalue()
+        for table in ("broadcast_subscribers", "broadcast_jobs", "broadcast_targets"):
+            assert f"CREATE TABLE {table}" in sql
+        assert sql.count("CHARSET=utf8mb4") == 3
+        assert sql.count("COLLATE utf8mb4_unicode_ci") == 3
+        assert "ix_broadcast_target_state" in sql
+    finally:
+        get_settings.cache_clear()
