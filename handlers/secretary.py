@@ -210,7 +210,8 @@ async def _deliver_draft(row, draft_id: int, owner_id: int, bot: Bot) -> str:
         if routing != "active":
             await chat_control.note(owner_id, row.connection_id, row.chat_id, routing)
             await store.set_draft_delivery_state(draft_id, "blocked")
-            return "⏸ ارسال نشد؛ گفتگو متوقف یا موقتاً در اختیار صاحب حساب است."
+            return ("🕒 ارسال نشد؛ اکنون خارج از ساعت پاسخ‌گویی است." if routing == "outside_hours" else
+                    "⏸ ارسال نشد؛ گفتگو متوقف یا موقتاً در اختیار صاحب حساب است.")
     except Exception as exc:
         logger.warning("chat routing check failed type=%s", type(exc).__name__)
         await store.set_draft_delivery_state(draft_id, "blocked")

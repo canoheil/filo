@@ -3,7 +3,7 @@ from datetime import datetime
 from core.draft_ui import valid_number
 from services import chat_control as controls, store
 
-LABELS = {"active": "فعال؛ مانع محلی ندارد", "chat_paused": "مکث همین گفتگو",
+LABELS = {"outside_hours": "خارج از ساعت پاسخ‌گویی", "active": "فعال؛ مانع محلی ندارد", "chat_paused": "مکث همین گفتگو",
           "owner_takeover": "تحویل موقت به مالک", "global_paused": "مکث کلی",
           "quota": "سهمیه تمام شده", "reply_superseded": "پاسخ آماده‌شده پس از تغییر کنترل کنار گذاشته شد", "unavailable": "اتصال در دسترس نیست"}
 
@@ -48,9 +48,12 @@ async def navigate(cb, state, action):
             await controls.set_chat(uid, row.id, parts[1] == "pause")
             row = await controls.get_chat(uid, row.id)
         persona = await store.get_or_create_persona(uid)
+        from services.schedule import check
+        within_hours = await check(uid)
         until = f"\nپایان تحویل موقت: {row.handoff_until:%Y-%m-%d %H:%M} UTC" if row.handoff_until and row.handoff_until > datetime.utcnow() else ""
         await show(cb, f"گفتگو: {row.chat_id}\nوضعیت فعلی: {LABELS[controls.reason(row)]}{until}\n"
                    f"مکث کلی: {'روشن' if persona.is_paused else 'خاموش'}\n"
+                   f"ساعت پاسخ: {'مجاز / برنامه خاموش' if within_hours else 'خارج از ساعت؛ سکوت'}\n"
                    f"آخرین دلیل ثبت‌شده (تاریخی): {LABELS.get(row.last_reason, row.last_reason)}\n"
                    "ادامه، فقط مکث همین گفتگو و تحویل موقت آن را لغو می‌کند؛ مکث کلی و سهمیه مستقل‌اند. "
                    "پاسخ‌های قبلاً مسدودشده خودکار دوباره ارسال نمی‌شوند.", keyboard(

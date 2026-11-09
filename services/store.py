@@ -6,7 +6,7 @@ from sqlalchemy import select, delete, update, case, or_
 from sqlalchemy.exc import IntegrityError
 
 from database.connection import get_session
-from database.models import User, BusinessConnection, Persona, AiMessageLog, SetupProgress, ChatControl
+from database.models import User, BusinessConnection, Persona, AiMessageLog, SetupProgress, ChatControl, ReplySchedule
 from services.quota import utc_today
 from services.draft_lifecycle import cutoff, expired
 
@@ -219,6 +219,7 @@ async def delete_user_data(tg_user_id: int) -> None:
             AiMessageLog.connection_id.in_(select(BusinessConnection.connection_id).where(
                 BusinessConnection.user_id == tg_user_id))))
         await s.execute(delete(BusinessConnection).where(BusinessConnection.user_id == tg_user_id))
+        await s.execute(delete(ReplySchedule).where(ReplySchedule.user_id == tg_user_id))
         await s.execute(delete(ChatControl).where(ChatControl.user_id == tg_user_id))
         await s.execute(delete(SetupProgress).where(SetupProgress.user_id == tg_user_id))
         await s.execute(delete(Persona).where(Persona.user_id == tg_user_id))
@@ -328,3 +329,39 @@ async def edit_pending_draft(draft_id: int, owner_id: int, revision: int, text: 
         ).values(draft_text=text, revision=AiMessageLog.revision + 1))
         await s.commit()
         return result.rowcount == 1
+
+
+async def get_reply_schedule(owner_id: int) -> ReplySchedule:
+    async with get_session() as s:
+        await _ensure_row(s, User, owner_id, tg_user_id=owner_id)
+        row = await _ensure_row(s, ReplySchedule, owner_id, user_id=owner_id)
+        await s.commit()
+        await s.refresh(row)
+        return row
+
+
+async def update_reply_schedule(owner_id: int, *, expected_revision: int | None = None, **fields) -> ReplySchedule:
+    from services.schedule import validate
+    if fields.keys() - {"enabled", "timezone", "days", "start_minute", "end_minute"}:
+        raise ValueError("Invalid schedule field")
+    await get_reply_schedule(owner_id)
+    async with get_session() as s:
+        row = (await s.execute(select(ReplySchedule).where(
+            ReplySchedule.user_id == owner_id).with_for_update())).scalar_one()
+        if expected_revision is not None and row.revision != expected_revision:
+            raise ValueError("Schedule changed")
+        for key, value in fields.items():
+            setattr(row, key, value)
+        if type(row.enabled) is not bool or not isinstance(row.timezone, str) or not isinstance(row.days, list):
+            raise ValueError("Invalid schedule types")
+        if any(type(day) is not int or day not in range(7) for day in row.days):
+            raise ValueError("Invalid weekdays")
+        if row.enabled:
+            validate(row.timezone, row.days, row.start_minute, row.end_minute)
+        else:
+            # Validate partial edits too; an empty timezone/days is permitted only while disabled.
+            validate(row.timezone or "UTC", row.days or [0], row.start_minute, row.end_minute)
+        row.revision += 1
+        await s.commit()
+        await s.refresh(row)
+        return row

@@ -11,3 +11,6 @@ pytest-asyncio>=1.4.0
 
 # SQLite-backed store regression tests (production uses MariaDB)
 aiosqlite>=0.20.0
+
+# IANA timezone database (fallback when the host lacks system tzdata)
+tzdata>=2025.1
