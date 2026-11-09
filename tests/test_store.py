@@ -260,3 +260,57 @@ async def test_close_and_bulk_reject_are_owned_and_do_not_touch_inflight(session
     assert await lifecycle.close_failed(1, 223)
     assert (await store.take_draft(223)).status == "closed"
     assert (await store.take_draft(223)).draft_text is None
+
+
+@pytest.mark.asyncio
+async def test_chat_controls_owner_isolation_and_handoff(sessions, monkeypatch):
+    from datetime import datetime, timedelta
+    from services import chat_control as controls
+    monkeypatch.setattr(controls, "get_session", store.get_session)
+    await store.upsert_connection("chat-a", 1, {}, 1, True)
+    await store.upsert_connection("chat-b", 2, {}, 2, True)
+    assert await controls.ensure(2, "chat-a", 20) is None
+    first = await controls.ensure(1, "chat-a", 20)
+    second = await controls.ensure(1, "chat-a", 21)
+    assert await controls.check(1, "chat-a", 20) == "active"
+    assert not await controls.set_chat(2, first.id, True)
+    await controls.set_chat(1, first.id, True)
+    assert await controls.check(1, "chat-a", 20) == "chat_paused"
+    assert await controls.check(1, "chat-a", 21) == "active"
+    await controls.set_chat(1, first.id, False)
+    await controls.owner_replied(1, "chat-a", 20, 100, 30)
+    row = await controls.get_chat(1, first.id)
+    assert controls.reason(row) == "owner_takeover"
+    assert controls.reason(row, datetime.utcnow()+timedelta(minutes=31)) == "active"
+    version = row.routing_revision
+    until = row.handoff_until
+    await controls.owner_replied(1, "chat-a", 20, 100, 30)  # retry must not extend
+    again = await controls.get_chat(1, first.id)
+    assert again.handoff_until == until and again.routing_revision == version
+    await controls.set_chat(1, first.id, False)
+    assert await controls.check(1, "chat-a", 20) == "active"
+    assert await controls.version(1, "chat-a", 20) > version
+    await store.delete_user_data(1)
+    assert await controls.get_chat(1, first.id) is None
+    assert await controls.get_chat(1, second.id) is None
+
+
+@pytest.mark.asyncio
+async def test_handoff_defaults_off_and_blocks_existing_pending(sessions, monkeypatch):
+    from services import chat_control as controls
+    from database.models import AiMessageLog
+    monkeypatch.setattr(controls, "get_session", store.get_session)
+    await store.upsert_connection("handoff", 1, {}, 1, True)
+    assert (await store.get_or_create_persona(1)).handoff_minutes == 0
+    row = await controls.ensure(1, "handoff", 20)
+    await controls.owner_replied(1, "handoff", 20, 100, 0)
+    assert await controls.check(1, "handoff", 20) == "active"
+    async with sessions() as s:
+        s.add(AiMessageLog(id=300, connection_id="handoff", chat_id=20, message_id=1,
+                          direction="draft", status="draft", draft_text="pending"))
+        await s.commit()
+    await controls.owner_replied(1, "handoff", 20, 100, 15)
+    assert (await store.take_draft(300)).status == "blocked"
+    assert await store.claim_draft(300, 1) is None
+    with pytest.raises(ValueError):
+        await store.update_persona(1, handoff_minutes=999)

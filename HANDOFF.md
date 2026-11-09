@@ -130,3 +130,11 @@ bot.py (entry, polling, allowed_updates شامل business_*) · core/config.py �
 - UI shows UTC created/deadline, status guidance, owner-scoped close for blocked/uncertain/expired, and confirmed bulk reject of pending rows created before confirmation opened. No resend action, no closing fresh sending. Final actions recheck ownership/status.
 - Added 0006_draft_lifecycle_index in addition to this branch's 0005 draft revision. Deploy both via upgrade head; see docs/draft-lifecycle.md. Existing old drafts are subject to new policy on deployment.
 - Local tests cover stale-button guards without maintenance, retention, cleanup idempotency, cross-owner close/bulk actions, confirmation replay and final pre-send deadline. No live MariaDB/Telegram run or production deployment performed.
+
+## Per-chat pause and owner takeover
+- Added Persona.handoff_minutes (default 0; 0/15/30/60 allowlist) and owner-scoped ChatControl metadata via 0007_chat_controls. No message bodies/contact names stored; /forget deletes controls first.
+- Private menu offers paginated chats, pause/resume, current local state + global pause, historical last suppression reason and opt-in automatic owner takeover.
+- Owner outgoing business updates start/extend handoff with message-id dedup, never trigger AI, and block existing pending drafts in that chat. Other business bots remain ignored. Resume/off semantics documented explicitly.
+- Inbound routing guard precedes quota/AI; post-AI routing revision discards superseded generation. Final draft delivery rechecks local routing and fails closed; no automatic retries. Cannot recall already-started Telegram sends.
+- Chat scopes and queries revalidate ownership. Only numeric user FK used to avoid legacy connection_id charset FK incompatibility; connection ownership validated in service.
+- docs/chat-controls.md includes migration/rollback effects and server test checklist. Working-hours/timezone scheduling intentionally deferred to next phase.

@@ -145,3 +145,26 @@ async def test_deadline_rechecked_before_network_send(monkeypatch):
     assert "مهلت" in result
     expire.assert_awaited_once_with(1)
     bot.send_message.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def routing_defaults(monkeypatch):
+    from handlers import secretary
+    monkeypatch.setattr(secretary.chat_control, "check", AsyncMock(return_value="active"))
+    monkeypatch.setattr(secretary.chat_control, "note", AsyncMock())
+    monkeypatch.setattr(secretary.chat_control, "version", AsyncMock(return_value=0))
+
+
+@pytest.mark.asyncio
+async def test_takeover_blocks_final_send(monkeypatch):
+    from handlers import secretary
+    monkeypatch.setattr(secretary.chat_control, "check", AsyncMock(return_value="owner_takeover"))
+    monkeypatch.setattr(store, "get_or_create_persona", AsyncMock(return_value=SimpleNamespace(is_paused=False)))
+    state = AsyncMock()
+    monkeypatch.setattr(store, "set_draft_delivery_state", state)
+    bot = AsyncMock()
+    bot.get_business_connection.return_value = SimpleNamespace(
+        user=SimpleNamespace(id=1), is_enabled=True, rights=SimpleNamespace(can_reply=True))
+    await secretary._deliver_draft(SimpleNamespace(connection_id="c", chat_id=2, draft_text="answer"), 1, 1, bot)
+    bot.send_message.assert_not_called()
+    state.assert_awaited_once_with(1, "blocked")

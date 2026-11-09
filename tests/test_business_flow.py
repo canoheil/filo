@@ -114,3 +114,50 @@ async def test_optin_context_uses_previous_inbound_but_not_pending_draft(monkeyp
         assert "UNSENT" not in str(recent_context.begin(1, "c", 2)[2])
     finally:
         recent_context.clear_owner(1)
+
+
+@pytest.fixture(autouse=True)
+def routing_defaults(monkeypatch):
+    monkeypatch.setattr(secretary.chat_control, "check", AsyncMock(return_value="active"))
+    monkeypatch.setattr(secretary.chat_control, "note", AsyncMock())
+    monkeypatch.setattr(secretary.chat_control, "version", AsyncMock(return_value=0))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("routing", ["chat_paused", "owner_takeover"])
+async def test_suppressed_chat_never_spends_quota(monkeypatch, routing):
+    monkeypatch.setattr(secretary.chat_control, "check", AsyncMock(return_value=routing))
+    monkeypatch.setattr(secretary.store, "get_connection", AsyncMock(
+        return_value=SimpleNamespace(user_id=1, is_enabled=True)))
+    monkeypatch.setattr(secretary.store, "log_inbound_once", AsyncMock(return_value=True))
+    quota, generate = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(secretary.store, "quota_hit_and_count", quota)
+    monkeypatch.setattr(secretary.ai, "generate_reply", generate)
+    message = SimpleNamespace(business_connection_id="c", sender_business_bot=None,
+        from_user=SimpleNamespace(id=2), text="hello", caption=None,
+        chat=SimpleNamespace(id=2), message_id=1)
+    await secretary.on_business_message(message, AsyncMock())
+    quota.assert_not_called()
+    generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_takeover_during_ai_discards_generated_reply(monkeypatch):
+    p = SimpleNamespace(is_paused=False, auto_reply=True, context_enabled=False)
+    monkeypatch.setattr(secretary.store, "get_connection", AsyncMock(return_value=SimpleNamespace(user_id=1, is_enabled=True)))
+    monkeypatch.setattr(secretary.store, "log_inbound_once", AsyncMock(return_value=True))
+    monkeypatch.setattr(secretary.store, "get_or_create_persona", AsyncMock(return_value=p))
+    monkeypatch.setattr(secretary.store, "get_or_create_user", AsyncMock(return_value=SimpleNamespace(tg_user_id=1)))
+    monkeypatch.setattr(secretary.store, "quota_hit_and_count", AsyncMock(return_value=(True, 1)))
+    monkeypatch.setattr(secretary.persona_svc, "build_system_prompt", lambda *args, **kw: "rules")
+    monkeypatch.setattr(secretary.ai, "generate_reply", AsyncMock(return_value="outdated"))
+    monkeypatch.setattr(secretary.chat_control, "version", AsyncMock(side_effect=[0, 1]))
+    save = AsyncMock()
+    monkeypatch.setattr(secretary.store, "save_draft", save)
+    message = SimpleNamespace(business_connection_id="c", sender_business_bot=None,
+        from_user=SimpleNamespace(id=2), text="hello", caption=None,
+        chat=SimpleNamespace(id=2), message_id=1)
+    bot = AsyncMock()
+    await secretary.on_business_message(message, bot)
+    save.assert_not_called()
+    bot.send_message.assert_not_called()

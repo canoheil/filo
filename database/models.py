@@ -56,6 +56,7 @@ class Persona(Base):
     knowledge_base: Mapped[str] = mapped_column(Text, default="")             # free-form facts owner gives us
     instructions: Mapped[str] = mapped_column(Text, default="")               # owner's custom rules
     signature: Mapped[str] = mapped_column(String(120), default="")           # e.g. "— سکرتر فروشگاه"
+    handoff_minutes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     context_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     auto_reply: Mapped[bool] = mapped_column(Boolean, default=False)          # False => draft-for-approval (safe default)
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False)           # owner hit /pause
@@ -95,3 +96,22 @@ class SetupProgress(Base):
     completed: Mapped[list] = mapped_column(JSON, default=list)
     tested_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     approved_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ChatControl(Base):
+    """Owner-scoped routing metadata. Never message bodies or contact names."""
+    __tablename__ = "chat_controls"
+    __table_args__ = (
+        UniqueConstraint("user_id", "connection_id", "chat_id", name="uq_chat_control_scope"),
+        {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_user_id"), index=True)
+    connection_id: Mapped[str] = mapped_column(String(255))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    is_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    handoff_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    routing_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    owner_message_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    last_reason: Mapped[str] = mapped_column(String(32), default="active")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
