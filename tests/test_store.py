@@ -339,3 +339,99 @@ async def test_schedule_is_default_off_owned_and_versioned(sessions, monkeypatch
     assert (await schedule.read(1)).days == [5,6,0,1,2]
     await store.delete_user_data(1)
     assert await schedule.read(1) is None
+
+
+@pytest.mark.asyncio
+async def test_request_accounting_atomic_and_idempotent(sessions, monkeypatch):
+    from services import usage
+    from database.models import AiRequest
+    monkeypatch.setattr(usage, "get_session", store.get_session)
+    await store.get_or_create_user(1, None)
+    key = usage.business_key(1, "c", 2, 3)
+    results = await asyncio.gather(*(store.quota_hit_and_count(1, 30, request_key=key) for _ in range(5)))
+    assert sum(allowed for allowed, _ in results) == 1
+    async with sessions() as s:
+        assert (await s.get(User, 1)).quota_used == 1
+        assert (await s.get(AiRequest, key)).state == "reserved"
+    await usage.finish(2, key)  # another owner cannot finalize this request
+    async with sessions() as s:
+        assert (await s.get(AiRequest, key)).state == "reserved"
+    await usage.finish(1, key)
+    await usage.finish(1, key, RuntimeError("PRIVATE"))  # terminal outcome is immutable
+    async with sessions() as s:
+        request = await s.get(AiRequest, key)
+        assert request.state == "succeeded" and request.error_code is None
+    await store.delete_user_data(1)
+    async with sessions() as s:
+        assert await s.get(AiRequest, key) is None
+
+
+@pytest.mark.asyncio
+async def test_denied_paid_sandbox_and_safe_errors(sessions, monkeypatch):
+    from services import usage
+    from services.ai import AIError
+    from database.models import AiRequest
+    monkeypatch.setattr(usage, "get_session", store.get_session)
+    await store.get_or_create_user(1, None)
+    denied = usage.sandbox_key(1, 1, 1)
+    assert await store.quota_hit_and_count(1, 0, request_key=denied, source="sandbox") == (False, 0)
+    async with sessions() as s:
+        assert (await s.get(AiRequest, denied)).state == "denied"
+        user = await s.get(User, 1)
+        user.plan = "pro"
+        await s.commit()
+    paid = usage.sandbox_key(1, 1, 2)
+    assert (await store.quota_hit_and_count(1, 0, request_key=paid, source="sandbox"))[0]
+    await usage.finish(1, paid, AIError("http_429"))
+    async with sessions() as s:
+        assert (await s.get(AiRequest, paid)).error_code == "http_429"
+    assert usage.safe_error(RuntimeError("PRIVATE")) == "internal"
+    assert usage.safe_error(AIError("PRIVATE")) == "internal"
+
+
+@pytest.mark.asyncio
+async def test_usage_utc_owner_scope_and_current_draft_status(sessions, monkeypatch):
+    from datetime import datetime, timedelta
+    from database.models import AiRequest, AiMessageLog
+    from services import usage
+    monkeypatch.setattr(usage, "get_session", store.get_session)
+    await store.upsert_connection("usage1", 1, {}, 1, True)
+    await store.upsert_connection("usage2", 2, {}, 2, True)
+    now = datetime(2026, 11, 7, 12)
+    async with sessions() as s:
+        for key, owner, source, state, created in [
+            ("a", 1, "business", "succeeded", now), ("b", 1, "sandbox", "failed", now),
+            ("c", 2, "business", "succeeded", now), ("d", 1, "business", "reserved", now-timedelta(days=1))]:
+            s.add(AiRequest(request_key=key, user_id=owner, source=source, state=state, created_at=created))
+        for id_, conn, direction, status, created in [
+            (400, "usage1", "draft", "draft", now-timedelta(hours=2)),
+            (401, "usage1", "draft", "draft", now-timedelta(days=1)),
+            (402, "usage1", "out", "ok", now), (403, "usage2", "out", "ok", now),
+            (404, "usage1", "out", "ok", now.replace(day=8, hour=0)),
+            (405, "usage1", "in", "outside_hours", now)]:
+            s.add(AiMessageLog(id=id_, connection_id=conn, chat_id=2, message_id=id_, direction=direction,
+                               status=status, created_at=created))
+        await s.commit()
+    data = await usage.report(1, now)
+    assert data["sent"] == 1
+    assert sum(count for _, _, count in data["requests"]) == 2
+    assert data["drafts"] == {"expired": 1}
+    assert data["open"] == {"expired": 2}
+    assert data["inbound"] == {"outside_hours": 1}
+
+
+@pytest.mark.asyncio
+async def test_distinct_request_reservations_respect_quota_under_concurrency(sessions, monkeypatch):
+    from services import usage
+    from database.models import AiRequest
+    from sqlalchemy import select
+    monkeypatch.setattr(usage, "get_session", store.get_session)
+    await store.get_or_create_user(1, None)
+    results = await asyncio.gather(*(store.quota_hit_and_count(
+        1, 2, request_key=usage.business_key(1, "c", 2, id_)) for id_ in range(8)))
+    assert sum(allowed for allowed, _ in results) == 2
+    async with sessions() as s:
+        assert (await s.get(User, 1)).quota_used == 2
+        requests = (await s.execute(select(AiRequest))).scalars().all()
+        assert sum(r.state == "reserved" for r in requests) == 2
+        assert sum(r.state == "denied" for r in requests) == 6

@@ -169,3 +169,20 @@ async def test_takeover_blocks_final_send(monkeypatch, routing):
     await secretary._deliver_draft(SimpleNamespace(connection_id="c", chat_id=2, draft_text="answer"), 1, 1, bot)
     bot.send_message.assert_not_called()
     state.assert_awaited_once_with(1, "blocked")
+
+
+@pytest.mark.asyncio
+async def test_owner_membership_rechecked_before_delivery(monkeypatch):
+    from handlers import secretary
+    from services.membership import MembershipResult
+    monkeypatch.setattr(secretary.membership, "check", AsyncMock(return_value=MembershipResult("missing")))
+    monkeypatch.setattr(store, "get_or_create_persona", AsyncMock(return_value=SimpleNamespace(is_paused=False)))
+    state = AsyncMock()
+    monkeypatch.setattr(store, "set_draft_delivery_state", state)
+    bot = AsyncMock()
+    bot.get_business_connection.return_value = SimpleNamespace(
+        user=SimpleNamespace(id=1), is_enabled=True, rights=SimpleNamespace(can_reply=True))
+    notice = await secretary._deliver_draft(SimpleNamespace(connection_id="c", chat_id=2, draft_text="answer"), 1, 1, bot)
+    assert "کانال‌ها" in notice
+    bot.send_message.assert_not_called()
+    state.assert_awaited_once_with(1, "blocked")

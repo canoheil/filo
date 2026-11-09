@@ -1,9 +1,10 @@
 from aiogram import Dispatcher
 
-from handlers import start, secretary, menu, setup, draft_edit, schedule
+from handlers import start, secretary, menu, setup, draft_edit, schedule, admin
 
 
 def register_all_handlers(dp: Dispatcher) -> None:
+    dp.include_router(admin.router)
     dp.include_router(schedule.router)
     dp.include_router(draft_edit.router)
     dp.include_router(setup.router)

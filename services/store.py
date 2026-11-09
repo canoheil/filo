@@ -6,7 +6,7 @@ from sqlalchemy import select, delete, update, case, or_
 from sqlalchemy.exc import IntegrityError
 
 from database.connection import get_session
-from database.models import User, BusinessConnection, Persona, AiMessageLog, SetupProgress, ChatControl, ReplySchedule
+from database.models import User, BusinessConnection, Persona, AiMessageLog, SetupProgress, ChatControl, ReplySchedule, AiRequest
 from services.quota import utc_today
 from services.draft_lifecycle import cutoff, expired
 
@@ -186,14 +186,37 @@ async def log_outbound(connection_id: str, chat_id: int, message_id: int, status
             await s.rollback()
 
 
-async def quota_hit_and_count(user_id: int, free_limit: int) -> tuple[bool, int]:
+async def quota_hit_and_count(user_id: int, free_limit: int, *, request_key: str | None = None, source: str = "business") -> tuple[bool, int]:
     """Reserve one AI request with a conditional UPDATE (including UTC rollover).
 
     Keep the write lock through reading the result. No external calls occur in
     this transaction. Failed AI calls still consume the reservation by design.
     """
-    today = utc_today()
+    if request_key is not None and (not 1 <= len(request_key) <= 64 or not request_key.isascii()
+                                    or not request_key.isalnum() or source not in {"business", "sandbox"}):
+        raise ValueError("Invalid request metadata")
     async with get_session() as s:
+        # Lock parent first: child FK inserts must not acquire shared locks then
+        # deadlock upgrading the same owner row during simultaneous reservations.
+        owner = (await s.execute(select(User).where(User.tg_user_id == user_id)
+                                 .with_for_update())).scalar_one_or_none()
+        if owner is None:
+            return False, 0
+        # Anchor quota day and request timestamp together after waiting for the
+        # owner lock, so a lock wait crossing midnight cannot misattribute usage.
+        reserved_at = datetime.utcnow()
+        today = reserved_at.date().isoformat()
+        request = None
+        if request_key is not None:
+            try:
+                async with s.begin_nested():
+                    request = AiRequest(request_key=request_key, user_id=user_id, source=source, state="reserved", created_at=reserved_at)
+                    s.add(request)
+                    await s.flush()
+            except IntegrityError:
+                await s.rollback()
+                user = await s.get(User, user_id)
+                return False, user.quota_used if user else 0
         result = await s.execute(update(User).where(
             User.tg_user_id == user_id,
             User.plan == "free",
@@ -204,9 +227,12 @@ async def quota_hit_and_count(user_id: int, free_limit: int) -> tuple[bool, int]
             (User.quota_used, case((User.quota_date != today, 1), else_=User.quota_used + 1)),
             (User.quota_date, today),
         ))
-        user = await s.get(User, user_id)
+        # The preliminary identity-map read must not hide the atomic UPDATE result.
+        user = await s.get(User, user_id, populate_existing=True)
         allowed = user is not None and (user.plan != "free" or result.rowcount == 1)
         used = user.quota_used if user is not None else 0
+        if request is not None and not allowed:
+            request.state = "denied"
         await s.commit()
         return allowed, used
 
@@ -214,11 +240,17 @@ async def quota_hit_and_count(user_id: int, free_limit: int) -> tuple[bool, int]
 async def delete_user_data(tg_user_id: int) -> None:
     from services.context import recent_context
     recent_context.clear_owner(tg_user_id)
+    from services.membership import membership
+    membership.clear_user(tg_user_id)
+    from database.models import BroadcastSubscriber, BroadcastTarget
     async with get_session() as s:
+        await s.execute(delete(BroadcastTarget).where(BroadcastTarget.user_id == tg_user_id))
+        await s.execute(delete(BroadcastSubscriber).where(BroadcastSubscriber.user_id == tg_user_id))
         await s.execute(delete(AiMessageLog).where(
             AiMessageLog.connection_id.in_(select(BusinessConnection.connection_id).where(
                 BusinessConnection.user_id == tg_user_id))))
         await s.execute(delete(BusinessConnection).where(BusinessConnection.user_id == tg_user_id))
+        await s.execute(delete(AiRequest).where(AiRequest.user_id == tg_user_id))
         await s.execute(delete(ReplySchedule).where(ReplySchedule.user_id == tg_user_id))
         await s.execute(delete(ChatControl).where(ChatControl.user_id == tg_user_id))
         await s.execute(delete(SetupProgress).where(SetupProgress.user_id == tg_user_id))
@@ -365,3 +397,16 @@ async def update_reply_schedule(owner_id: int, *, expected_revision: int | None 
         await s.commit()
         await s.refresh(row)
         return row
+
+
+async def mark_inbound_outcome(connection_id: str, chat_id: int, message_id: int, status: str) -> None:
+    allowed = {"chat_paused", "owner_takeover", "global_paused", "quota", "unavailable",
+               "reply_superseded", "outside_hours", "ai_reserved", "ai_ok", "ai_failed", "membership", "membership_error"}
+    if status not in allowed:
+        raise ValueError("Invalid inbound outcome")
+    async with get_session() as s:
+        await s.execute(update(AiMessageLog).where(
+            AiMessageLog.connection_id == connection_id, AiMessageLog.chat_id == chat_id,
+            AiMessageLog.message_id == message_id, AiMessageLog.direction == "in"
+        ).values(status=status))
+        await s.commit()

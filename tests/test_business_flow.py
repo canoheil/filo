@@ -120,6 +120,8 @@ async def test_optin_context_uses_previous_inbound_but_not_pending_draft(monkeyp
 def routing_defaults(monkeypatch):
     monkeypatch.setattr(secretary.chat_control, "check", AsyncMock(return_value="active"))
     monkeypatch.setattr(secretary.chat_control, "note", AsyncMock())
+    monkeypatch.setattr(secretary.usage, "finish", AsyncMock())
+    monkeypatch.setattr(secretary.usage, "inbound", AsyncMock())
     monkeypatch.setattr(secretary.chat_control, "version", AsyncMock(return_value=0))
 
 
@@ -160,4 +162,26 @@ async def test_takeover_during_ai_discards_generated_reply(monkeypatch):
     bot = AsyncMock()
     await secretary.on_business_message(message, bot)
     save.assert_not_called()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("access_state", ["missing", "unavailable"])
+async def test_owner_membership_blocks_business_before_ai(monkeypatch, access_state):
+    from services.membership import MembershipResult
+    check = AsyncMock(return_value=MembershipResult(access_state))
+    monkeypatch.setattr(secretary.membership, "check", check)
+    monkeypatch.setattr(secretary.chat_control, "ensure", AsyncMock())
+    monkeypatch.setattr(secretary.store, "get_connection", AsyncMock(return_value=SimpleNamespace(user_id=1, is_enabled=True)))
+    monkeypatch.setattr(secretary.store, "log_inbound_once", AsyncMock(return_value=True))
+    quota, ai = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(secretary.store, "quota_hit_and_count", quota)
+    monkeypatch.setattr(secretary.ai, "generate_reply", ai)
+    msg = SimpleNamespace(business_connection_id="c", sender_business_bot=None, from_user=SimpleNamespace(id=2),
+                          text="hello", caption=None, chat=SimpleNamespace(id=2), message_id=1)
+    bot = AsyncMock()
+    await secretary.on_business_message(msg, bot)
+    check.assert_awaited_once_with(bot, 1)  # owner, never the incoming contact
+    quota.assert_not_called()
+    ai.assert_not_called()
     bot.send_message.assert_not_called()

@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from core.config import get_settings
 from core.draft_ui import draft_keyboard
 from services.draft_lifecycle import caption
-from services import store, ai, persona as persona_service
+from services import store, ai, persona as persona_service, usage
 from services.persona_health import DEFAULTS, is_question_only, display_value
 from services.quota import utc_today
 
@@ -45,6 +45,7 @@ def home_keyboard():
         [button("🌱 آماده‌سازی فیلو؛ شروع / ادامه", "setup:overview", "primary")],
         [button("🎭 شخصیت دستیار", "persona"), button("📚 اطلاعات و قوانین", "knowledge")],
         [button("⚙️ شیوهٔ پاسخ‌دهی", "mode", "primary"), button("✍️ پیش‌نویس‌ها", "drafts")],
+        [button("📊 مصرف امروز", "insights:usage"), button("🩺 چرا پاسخ نمی‌دهد؟", "insights:health")],
         [button("🕒 ساعت پاسخ‌گویی", "hours:home")],
         [button("🧠 حافظهٔ کوتاه گفتگو", "context"), button("💬 کنترل گفتگوها", "chats:list:0")],
         [button("🔗 اتصال تلگرام", "connection"), button("❓ راهنما", "help")],
@@ -105,7 +106,10 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.clear()  # navigation always cancels an unfinished text edit
     uid = cb.from_user.id
-    if action.startswith("hours:"):
+    if action.startswith("insights:"):
+        from handlers.insights import navigate
+        await navigate(cb, action)
+    elif action.startswith("hours:"):
         from handlers.schedule import navigate
         await navigate(cb, state, action, pending_data)
     elif action.startswith("chats:"):
@@ -249,6 +253,9 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
                    "اما به‌عنوان تاریخچهٔ گفتگو در دیتابیس ما ذخیره نمی‌شود. "
                    "اگر حافظهٔ کوتاه را فعال کنی، چند پیام اخیر موقتاً در RAM نگه داشته و به AI ارسال می‌شوند. "
                    "پیش‌نویس‌ها تا تصمیم تو یا بررسی خطای ارسال ممکن است نگه داشته شوند.\n"
+                   "برای اطلاع‌رسانی‌های بات، شناسهٔ گفت‌وگوی خصوصی و وضعیت تحویل پیام‌های سراسری هم نگهداری می‌شود؛ "
+                   "گزارش‌های پایان‌یافته تا ۳۰ روز از ساخت نگهداری می‌شوند. حذف داده‌ها تو را از فهرست و صف دریافت هم خارج می‌کند؛ "
+                   "درخواست ارسال آغازشده قابل پس‌گرفتن نیست.\n"
                    "حذف داده‌ها، پیام‌های قبلی تلگرام یا اطلاعات سرویس AI را پاک نمی‌کند.", keyboard(
                        [button("حذف داده‌های من…", "forgetask", "danger")], back()))
     elif action == "forgetask":
@@ -323,19 +330,23 @@ async def sandbox_reply(message: Message, state: FSMContext):
         await message.answer("اول نام، نقش و لحن آسیب‌دیده را در شخصیت دستیار اصلاح کن؛ سپس آزمایش را شروع کن.",
                              reply_markup=keyboard([button("اصلاح شخصیت", "persona")], back()))
         return
-    allowed, _ = await store.quota_hit_and_count(owner_id, get_settings().FREE_DAILY_LIMIT)
+    request_key = usage.sandbox_key(owner_id, message.chat.id, message.message_id)
+    allowed, _ = await store.quota_hit_and_count(owner_id, get_settings().FREE_DAILY_LIMIT,
+                                               request_key=request_key, source="sandbox")
     await state.clear()
     if not allowed:
-        await message.answer("سهمیهٔ امروز تمام شده؛ آزمایش به سرویس AI ارسال نشد.", reply_markup=home_keyboard())
+        await message.answer("درخواست جدیدی به AI ارسال نشد؛ سهمیهٔ امروز را بررسی کن. این پیام ممکن است قبلاً پردازش شده باشد.", reply_markup=home_keyboard())
         return
     from services.setup import fingerprint
     request_hash = fingerprint(p, user.use_case)
     try:
         reply = await ai.generate_reply(persona_service.build_system_prompt(p, use_case=user.use_case), text)
-    except Exception:
+    except Exception as exc:
+        await usage.finish(owner_id, request_key, exc)
         await message.answer("آزمایش پاسخ ناموفق بود؛ کمی بعد دوباره امتحان کن. سهمیهٔ این درخواست مصرف شد.",
                              reply_markup=home_keyboard())
         return
+    await usage.finish(owner_id, request_key)
     await store.record_setup_test(owner_id, request_hash)
     await message.answer("🧪 پاسخ آزمایشی — به مخاطبی ارسال نشده:", parse_mode=None)
     for offset in range(0, len(reply), 1800):
