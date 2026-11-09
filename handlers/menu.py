@@ -45,7 +45,7 @@ def home_keyboard():
         [button("🌱 آماده‌سازی فیلو؛ شروع / ادامه", "setup:overview", "primary")],
         [button("🎭 شخصیت دستیار", "persona"), button("📚 اطلاعات و قوانین", "knowledge")],
         [button("⚙️ شیوهٔ پاسخ‌دهی", "mode", "primary"), button("✍️ پیش‌نویس‌ها", "drafts")],
-        [button("🧠 حافظهٔ کوتاه گفتگو", "context")],
+        [button("🧠 حافظهٔ کوتاه گفتگو", "context"), button("💬 کنترل گفتگوها", "chats:list:0")],
         [button("🔗 اتصال تلگرام", "connection"), button("❓ راهنما", "help")],
         [button("🧪 آزمایش پاسخ", "sandbox", "primary"), button("🔒 حریم خصوصی", "privacy")],
     )
@@ -100,7 +100,10 @@ async def navigate(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.clear()  # navigation always cancels an unfinished text edit
     uid = cb.from_user.id
-    if action.startswith("life:"):
+    if action.startswith("chats:"):
+        from handlers.chat_control import navigate
+        await navigate(cb, state, action)
+    elif action.startswith("life:"):
         from handlers.draft_lifecycle import navigate
         await navigate(cb, state, action, pending_data)
     elif action.startswith("setup:"):

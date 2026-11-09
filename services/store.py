@@ -6,7 +6,7 @@ from sqlalchemy import select, delete, update, case, or_
 from sqlalchemy.exc import IntegrityError
 
 from database.connection import get_session
-from database.models import User, BusinessConnection, Persona, AiMessageLog, SetupProgress
+from database.models import User, BusinessConnection, Persona, AiMessageLog, SetupProgress, ChatControl
 from services.quota import utc_today
 from services.draft_lifecycle import cutoff, expired
 
@@ -54,9 +54,11 @@ async def get_or_create_persona(user_id: int) -> Persona:
 
 async def update_persona(user_id: int, **fields) -> Persona:
     allowed = {"name", "role", "tone", "language", "knowledge_base", "instructions",
-               "signature", "auto_reply", "is_paused", "context_enabled"}
+               "signature", "auto_reply", "is_paused", "context_enabled", "handoff_minutes"}
     if fields.keys() - allowed:
         raise ValueError("Unsupported persona field")
+    if "handoff_minutes" in fields and fields["handoff_minutes"] not in {0, 15, 30, 60}:
+        raise ValueError("Unsupported handoff duration")
     async with get_session() as s:
         await _ensure_row(s, User, user_id, tg_user_id=user_id)
         p = await _ensure_row(s, Persona, user_id, user_id=user_id)
@@ -217,6 +219,7 @@ async def delete_user_data(tg_user_id: int) -> None:
             AiMessageLog.connection_id.in_(select(BusinessConnection.connection_id).where(
                 BusinessConnection.user_id == tg_user_id))))
         await s.execute(delete(BusinessConnection).where(BusinessConnection.user_id == tg_user_id))
+        await s.execute(delete(ChatControl).where(ChatControl.user_id == tg_user_id))
         await s.execute(delete(SetupProgress).where(SetupProgress.user_id == tg_user_id))
         await s.execute(delete(Persona).where(Persona.user_id == tg_user_id))
         user = await s.get(User, tg_user_id)

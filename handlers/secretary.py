@@ -10,7 +10,7 @@ from aiogram.types import BusinessConnection, Message, CallbackQuery, InlineKeyb
 from core.config import get_settings
 from core.draft_ui import draft_keyboard, valid_number
 from core.logging import setup_logging
-from services import store, persona as persona_svc, ai
+from services import store, persona as persona_svc, ai, chat_control
 from services.context import recent_context
 from services.draft_lifecycle import expired, expire_claim, caption
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -62,6 +62,8 @@ async def on_business_message(message: Message, bot: Bot) -> None:
     sender_id = message.from_user.id if message.from_user else None
     if sender_id == conn.user_id:  # real owner replies may supply context, never trigger AI
         p = await store.get_or_create_persona(conn.user_id)
+        await chat_control.owner_replied(conn.user_id, connection_id, message.chat.id, message.message_id,
+                                         getattr(p, "handoff_minutes", 0))
         if getattr(p, "context_enabled", False):
             recent_context.sent(conn.user_id, connection_id, message.chat.id,
                                 message.text or message.caption or "")
@@ -75,15 +77,22 @@ async def on_business_message(message: Message, bot: Bot) -> None:
     if not is_new:
         return
 
+    routing = await chat_control.check(conn.user_id, connection_id, message.chat.id)
+    if routing != "active":
+        await chat_control.note(conn.user_id, connection_id, message.chat.id, routing)
+        return
     p = await store.get_or_create_persona(conn.user_id)
     if p.is_paused:
+        await chat_control.note(conn.user_id, connection_id, message.chat.id, "global_paused")
         return
 
+    routing_version = await chat_control.version(conn.user_id, connection_id, message.chat.id)
     user = await store.get_or_create_user(conn.user_id, None)
 
     # --- Quota (free tier: SHARED AI Studio key, so this is the safety rail) -
     allowed, used = await store.quota_hit_and_count(user.tg_user_id, settings.FREE_DAILY_LIMIT)
     if not allowed:
+        await chat_control.note(conn.user_id, connection_id, message.chat.id, "quota")
         try:
             await bot.send_message(conn.user_id, f"⚠️ سقف رایگان امروزت تمام شد ({settings.FREE_DAILY_LIMIT} جواب/روز).\nبرای ادامه، پلن Pro را فعال کن یا فردا برگرد.")
         except Exception:
@@ -91,6 +100,7 @@ async def on_business_message(message: Message, bot: Bot) -> None:
         logger.info("quota overflow user=%s", user.tg_user_id)
         return
 
+    await chat_control.note(conn.user_id, connection_id, message.chat.id, "active")
     if getattr(p, "context_enabled", False):
         # Recheck consent after quota I/O; do not start caching using a stale flag.
         p = await store.get_or_create_persona(conn.user_id)
@@ -112,6 +122,12 @@ async def on_business_message(message: Message, bot: Bot) -> None:
             pass
         return
 
+    # A takeover/pause/resume during AI invalidates that in-flight response, even
+    # if the temporary pause has already been lifted before generation finishes.
+    if (await chat_control.version(conn.user_id, connection_id, message.chat.id) != routing_version
+            or await chat_control.check(conn.user_id, connection_id, message.chat.id) != "active"):
+        await chat_control.note(conn.user_id, connection_id, message.chat.id, "reply_superseded")
+        return
     # Persist the generated reply before any delivery, including auto mode.
     draft_id = await store.save_draft(connection_id, message.chat.id, message.message_id, reply)
     # Settings may have changed while the AI request was in flight.
@@ -189,6 +205,16 @@ async def _deliver_draft(row, draft_id: int, owner_id: int, bot: Bot) -> str:
         await store.set_draft_delivery_state(draft_id, "blocked")
         return "⚠️ بررسی تنظیمات ممکن نشد؛ ارسال انجام نشد."
 
+    try:
+        routing = await chat_control.check(owner_id, row.connection_id, row.chat_id)
+        if routing != "active":
+            await chat_control.note(owner_id, row.connection_id, row.chat_id, routing)
+            await store.set_draft_delivery_state(draft_id, "blocked")
+            return "⏸ ارسال نشد؛ گفتگو متوقف یا موقتاً در اختیار صاحب حساب است."
+    except Exception as exc:
+        logger.warning("chat routing check failed type=%s", type(exc).__name__)
+        await store.set_draft_delivery_state(draft_id, "blocked")
+        return "⚠️ بررسی کنترل گفتگو ناموفق بود؛ ارسال انجام نشد."
     if expired(row):
         await expire_claim(draft_id)
         return "⌛ مهلت ارسال تمام شد؛ متن پیش‌نویس پاک شد."
