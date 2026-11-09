@@ -8,9 +8,11 @@ from aiogram.filters import Command
 from aiogram.types import BusinessConnection, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.config import get_settings
+from core.draft_ui import draft_keyboard, valid_number
 from core.logging import setup_logging
 from services import store, persona as persona_svc, ai
 from services.context import recent_context
+from services.draft_lifecycle import expired, expire_claim, caption
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 logger = setup_logging(get_settings().LOG_LEVEL)
@@ -128,13 +130,11 @@ async def on_business_message(message: Message, bot: Bot) -> None:
         return
 
     # --- Draft mode (default): owner approves in DM --------------------------
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ ارسال", callback_data=f"draft:approve:{draft_id}", style="success"),
-        InlineKeyboardButton(text="✖ رد", callback_data=f"draft:reject:{draft_id}", style="danger"),
-    ]])
-    preview = f"✍️ پیش‌نویس برای جواب به «{(message.from_user.first_name if message.from_user else 'کاربر')}»:\n\n{reply}"
+    kb = draft_keyboard(draft_id)
+    preview = f"✍️ پیش‌نویس #{draft_id} برای جواب به «{(message.from_user.first_name if message.from_user else 'کاربر')}»:"
     try:
-        await bot.send_message(conn.user_id, preview[:2000], reply_markup=kb, parse_mode=None)
+        await bot.send_message(conn.user_id, preview, parse_mode=None)
+        await bot.send_message(conn.user_id, reply, reply_markup=kb, parse_mode=None)
     except Exception as exc:
         logger.warning("draft preview failed id=%s type=%s", draft_id, type(exc).__name__)
 
@@ -142,15 +142,15 @@ async def on_business_message(message: Message, bot: Bot) -> None:
 @router.callback_query(F.data.startswith("draft:"))
 async def on_draft_action(cb: CallbackQuery, bot: Bot) -> None:
     parts = (cb.data or "").split(":")
-    if (len(parts) != 3 or parts[1] not in {"approve", "reject"}
-            or not parts[2].isascii() or not parts[2].isdigit()
-            or len(parts[2]) > 19 or not 0 < int(parts[2]) <= 2**63 - 1):
+    if (len(parts) not in {3, 4} or parts[1] not in {"approve", "reject"}
+            or not valid_number(parts[2]) or (len(parts) == 4 and not valid_number(parts[3], zero=True))):
         await cb.answer("درخواست نامعتبر است.", show_alert=True)
         return
     action, draft_id = parts[1], int(parts[2])
-    row = await store.claim_draft(draft_id, cb.from_user.id, reject=action == "reject")
+    revision = int(parts[3]) if len(parts) == 4 else 0
+    row = await store.claim_draft(draft_id, cb.from_user.id, reject=action == "reject", expected_revision=revision)
     if row is None:
-        await cb.answer("این پیش‌نویس در دسترس تو نیست یا قبلاً بررسی شده.", show_alert=True)
+        await cb.answer("این نسخه در دسترس نیست، تغییر کرده یا مهلت ارسالش تمام شده.", show_alert=True)
         return
     # Acknowledge before network work; callback queries have a short lifetime.
     try:
@@ -189,6 +189,9 @@ async def _deliver_draft(row, draft_id: int, owner_id: int, bot: Bot) -> str:
         await store.set_draft_delivery_state(draft_id, "blocked")
         return "⚠️ بررسی تنظیمات ممکن نشد؛ ارسال انجام نشد."
 
+    if expired(row):
+        await expire_claim(draft_id)
+        return "⌛ مهلت ارسال تمام شد؛ متن پیش‌نویس پاک شد."
     try:
         sent = await bot.send_message(
             chat_id=row.chat_id, text=row.draft_text or "",
@@ -229,19 +232,18 @@ async def cmd_drafts(message: Message) -> None:
         await message.answer("پیش‌نویس بازی نداری.", parse_mode=None)
         return
     labels = {"draft": "در انتظار تأیید", "sending": "ارسال شروع شده؛ نیازمند بررسی",
-              "blocked": "ارسال انجام نشد", "uncertain": "وضعیت ارسال نامشخص"}
+              "blocked": "ارسال انجام نشد", "uncertain": "وضعیت ارسال نامشخص", "expired": "منقضی؛ غیرقابل ارسال"}
+    from handlers.menu import keyboard, button
     await message.answer(
         "آخرین پیش‌نویس‌های باز (حداکثر ۲۰ مورد):\n" +
-        "\n".join(f"#{row.id} — {labels[row.status]}" for row in rows) +
-        "\nموارد نامشخص را قبل از هر ارسال دیگری در چت مقصد بررسی کن.", parse_mode=None)
+        "\n".join(f"#{row.id} — {labels[row.status]}{caption(row)}" for row in rows) +
+        "\nموارد نامشخص را قبل از هر ارسال دیگری در چت مقصد بررسی کن.",
+        reply_markup=keyboard([button("مدیریت و بستن موارد", "drafts")]), parse_mode=None)
     for row in rows:
         if row.status == "draft":
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅ ارسال", callback_data=f"draft:approve:{row.id}", style="success"),
-                InlineKeyboardButton(text="✖ رد", callback_data=f"draft:reject:{row.id}", style="danger"),
-            ]])
-            await message.answer(f"پیش‌نویس #{row.id}\n{(row.draft_text or '')[:1800]}",
-                                 reply_markup=kb, parse_mode=None)
+            kb = draft_keyboard(row.id, getattr(row, "revision", 0))
+            await message.answer(f"پیش‌نویس #{row.id} — نسخهٔ {getattr(row, 'revision', 0)}", parse_mode=None)
+            await message.answer(row.draft_text or "(متن خالی)", reply_markup=kb, parse_mode=None)
 
 
 @router.edited_business_message()

@@ -116,3 +116,17 @@ bot.py (entry, polling, allowed_updates شامل business_*) · core/config.py �
 - Prompt now discourages repeated introductions and false follow-up promises; small talk separated from unknown business facts. Personal use_case now passed from User to prompt. Setup fingerprint includes prompt revision and context setting.
 - Connection guide uses get_me username and CopyTextButton; stored count explicitly a snapshot. Connection notification no longer promises replies without permissions.
 - docs/recent-context.md documents privacy/deployment/limits and manual tests. No real model/Telegram/MariaDB test or production deployment here.
+
+## Versioned draft editing
+- Added revision column with server default zero and migration 0005_draft_revision. Claim/reject bind to expected revision; legacy unversioned callbacks authorize only revision zero.
+- draft_edit router precedes generic draft callbacks; private owner-only edit FSM stores id/revision, never sends. Save is an owner/status/revision conditional UPDATE; conflicts with send/reject or stale edits fail safely.
+- Shared keyboard shows send/edit/reject. All draft views show full text (separate header avoids Telegram length overflow); approved edited text uses existing delivery/context path.
+- /cancel/commands/menu navigation clear pending input. No long-lived draft lock. Existing text remains if cancelled; saved text persists across restart.
+- docs/draft-editing.md covers migration, rollback caution and manual tests. This is editing only: TTL/purge/closing failed deliveries are still the next part, not implemented here.
+
+## Draft lifecycle follow-up
+- Added configurable 60-minute send/edit TTL and 24-hour error-text retention, both from original created_at; config requires retention > TTL. SQL claim/edit checks plus final pre-network deadline check block stale buttons independently of maintenance. Edits do not renew validity.
+- Periodic 60s maintenance: expired pending text purged; stale sending becomes uncertain (never retryable); error text purged at retention; old expired metadata closed. DB metadata retained for idempotency, Telegram previews/backups not deleted.
+- UI shows UTC created/deadline, status guidance, owner-scoped close for blocked/uncertain/expired, and confirmed bulk reject of pending rows created before confirmation opened. No resend action, no closing fresh sending. Final actions recheck ownership/status.
+- Added 0006_draft_lifecycle_index in addition to this branch's 0005 draft revision. Deploy both via upgrade head; see docs/draft-lifecycle.md. Existing old drafts are subject to new policy on deployment.
+- Local tests cover stale-button guards without maintenance, retention, cleanup idempotency, cross-owner close/bulk actions, confirmation replay and final pre-send deadline. No live MariaDB/Telegram run or production deployment performed.

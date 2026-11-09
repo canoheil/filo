@@ -228,3 +228,24 @@ async def test_context_optin_requires_confirmation_and_off_clears(state, monkeyp
     await menu.navigate(callback("context:off"), state)
     assert key not in recent_context.sessions
     assert update.call_args.kwargs == {"context_enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_confirmations_are_single_use(state, monkeypatch):
+    from handlers import draft_lifecycle
+    close, reject = AsyncMock(return_value=True), AsyncMock(return_value=2)
+    monkeypatch.setattr(draft_lifecycle, "close_failed", close)
+    monkeypatch.setattr(draft_lifecycle, "reject_pending", reject)
+    monkeypatch.setattr(menu, "show", AsyncMock())
+    await menu.navigate(callback("life:close:1"), state)
+    close.assert_not_called()
+    await menu.navigate(callback("life:closeask:1"), state)
+    await menu.navigate(callback("life:close:1"), state)
+    await menu.navigate(callback("life:close:1"), state)
+    close.assert_awaited_once_with(1, 1)
+    await menu.navigate(callback("life:rejectconfirm"), state)
+    reject.assert_not_called()
+    await menu.navigate(callback("life:rejectask"), state)
+    await menu.navigate(callback("life:rejectconfirm"), state)
+    await menu.navigate(callback("life:rejectconfirm"), state)
+    reject.assert_awaited_once()

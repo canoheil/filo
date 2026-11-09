@@ -7,7 +7,7 @@ Draft mode stores the draft text temporarily and purges it on approve/reject.
 
 from datetime import datetime
 
-from sqlalchemy import String, BigInteger, Integer, Text, Boolean, DateTime, ForeignKey, JSON, UniqueConstraint
+from sqlalchemy import String, BigInteger, Integer, Text, Boolean, DateTime, ForeignKey, JSON, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.base import Base
@@ -70,6 +70,7 @@ class AiMessageLog(Base):
     __tablename__ = "ai_message_log"
     __table_args__ = (
         UniqueConstraint("connection_id", "chat_id", "message_id", "direction", name="uq_ai_log_direction"),
+        Index("ix_ai_draft_lifecycle", "direction", "status", "created_at"),
         {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
     )
 
@@ -79,6 +80,7 @@ class AiMessageLog(Base):
     message_id: Mapped[int] = mapped_column(BigInteger)
     direction: Mapped[str] = mapped_column(String(8))        # in | out | draft
     status: Mapped[str] = mapped_column(String(16), default="ok")  # ok | draft | sent | rejected | overflow | error
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     draft_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

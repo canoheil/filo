@@ -31,6 +31,17 @@ async def cleanup_context() -> None:
         recent_context.purge()
 
 
+async def cleanup_drafts() -> None:
+    from services.draft_lifecycle import maintenance
+    while True:
+        try:
+            await maintenance()
+        except Exception as exc:
+            import logging
+            logging.getLogger("secretary").warning("draft maintenance failed type=%s", type(exc).__name__)
+        await asyncio.sleep(60)
+
+
 async def main() -> None:
     settings = get_settings()
     logger = setup_logging(settings.LOG_LEVEL)
@@ -54,12 +65,16 @@ async def main() -> None:
     ], scope=BotCommandScopeAllPrivateChats())
     logger.info("secretary-bot starting (polling)…")
     cleanup = asyncio.create_task(cleanup_context())
+    drafts_cleanup = asyncio.create_task(cleanup_drafts())
     try:
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
     finally:
         cleanup.cancel()
+        drafts_cleanup.cancel()
         with suppress(asyncio.CancelledError):
             await cleanup
+        with suppress(asyncio.CancelledError):
+            await drafts_cleanup
 
 
 if __name__ == "__main__":

@@ -95,9 +95,9 @@ async def test_recovery_ui_has_no_resend_for_uncertain(monkeypatch):
     monkeypatch.setattr(store, "list_open_drafts", AsyncMock(return_value=rows))
     message = SimpleNamespace(from_user=SimpleNamespace(id=1), answer=AsyncMock())
     await cmd_drafts(message)
-    assert message.answer.await_count == 2
+    assert message.answer.await_count == 3
     assert "hidden" not in message.answer.call_args_list[0].args[0]
-    kb = message.answer.call_args_list[1].kwargs["reply_markup"]
+    kb = message.answer.call_args_list[-1].kwargs["reply_markup"]
     assert kb.inline_keyboard[0][0].callback_data == "draft:approve:2"
 
 
@@ -127,3 +127,21 @@ async def test_context_records_only_successfully_sent_reply(monkeypatch, success
         assert any(m["role"] == "assistant" for m in messages) == success
     finally:
         recent_context.clear_owner(1)
+
+
+@pytest.mark.asyncio
+async def test_deadline_rechecked_before_network_send(monkeypatch):
+    from datetime import datetime, timedelta
+    from handlers import secretary
+    monkeypatch.setattr(store, "get_or_create_persona", AsyncMock(return_value=SimpleNamespace(is_paused=False)))
+    expire = AsyncMock()
+    monkeypatch.setattr(secretary, "expire_claim", expire)
+    bot = AsyncMock()
+    bot.get_business_connection.return_value = SimpleNamespace(
+        user=SimpleNamespace(id=1), is_enabled=True, rights=SimpleNamespace(can_reply=True))
+    row = SimpleNamespace(connection_id="c", chat_id=2, draft_text="old",
+                          created_at=datetime.utcnow()-timedelta(hours=2))
+    result = await secretary._deliver_draft(row, 1, 1, bot)
+    assert "مهلت" in result
+    expire.assert_awaited_once_with(1)
+    bot.send_message.assert_not_called()
