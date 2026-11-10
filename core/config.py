@@ -14,6 +14,23 @@ class Settings(BaseSettings):
     FREE_DAILY_LIMIT: int = 30
     DRAFT_TTL_MINUTES: int = Field(default=60, ge=1, le=1440)
     DRAFT_ERROR_RETENTION_HOURS: int = Field(default=24, ge=1, le=720)
+    INPUT_RATE_SECONDS: float = Field(default=0.8, ge=0.1, le=60, allow_inf_nan=False)
+    INPUT_RATE_MAX_USERS: int = Field(default=4096, ge=16, le=100000)
+    AI_REQUEST_TIMEOUT_SECONDS: float = Field(default=75, ge=1, le=180, allow_inf_nan=False)
+    AI_MAX_CONCURRENT: int = Field(default=4, ge=1, le=64)
+    AI_OWNER_MAX_CONCURRENT: int = Field(default=1, ge=1, le=8)
+    AI_CHAT_INTERVAL_SECONDS: float = Field(default=2, ge=0.1, le=60, allow_inf_nan=False)
+    AI_OWNER_INTERVAL_SECONDS: float = Field(default=1, ge=0.1, le=60, allow_inf_nan=False)
+    AI_GLOBAL_INTERVAL_SECONDS: float = Field(default=0.2, ge=0.01, le=60, allow_inf_nan=False)
+    AI_GUARD_MAX_KEYS: int = Field(default=4096, ge=16, le=100000)
+    AI_BUSINESS_MAX_CHARS: int = Field(default=6000, ge=256, le=16000)
+    OUTBOUND_GLOBAL_INTERVAL_SECONDS: float = Field(default=0.05, ge=0.04, le=5, allow_inf_nan=False)
+    OUTBOUND_CHAT_INTERVAL_SECONDS: float = Field(default=1.05, ge=1, le=60, allow_inf_nan=False)
+    OUTBOUND_GROUP_INTERVAL_SECONDS: float = Field(default=3.1, ge=3, le=60, allow_inf_nan=False)
+    OUTBOUND_MAX_CHATS: int = Field(default=8192, ge=16, le=100000)
+    OUTBOUND_MAX_INFLIGHT: int = Field(default=16, ge=1, le=128)
+    OUTBOUND_MAX_WAITERS: int = Field(default=128, ge=1, le=1024)
+    OUTBOUND_MAX_WAIT_SECONDS: float = Field(default=3, ge=0.1, le=5, allow_inf_nan=False)
     LOG_LEVEL: str = "INFO"
     ADMIN_IDS: str = ""
     SUPPORT_CHANNEL: str = ""

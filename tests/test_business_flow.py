@@ -109,6 +109,7 @@ async def test_optin_context_uses_previous_inbound_but_not_pending_draft(monkeyp
     try:
         await secretary.on_business_message(message, AsyncMock())
         message.text, message.message_id = "second", 2
+        monkeypatch.setattr(secretary.ai_guard, "clock", lambda: 3.0)
         await secretary.on_business_message(message, AsyncMock())
         assert generate.call_args.kwargs["history"] == [{"role": "user", "content": "first"}]
         assert "UNSENT" not in str(recent_context.begin(1, "c", 2)[2])

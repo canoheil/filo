@@ -5,6 +5,7 @@ import asyncio
 import sys
 from contextlib import suppress
 from services.context import recent_context
+from services.outbound import outbound
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -27,10 +28,15 @@ ALLOWED_UPDATES = [
 ]
 
 
-async def cleanup_context() -> None:
+async def cleanup_context(limiter=None) -> None:
     while True:
         await asyncio.sleep(30)
         recent_context.purge()
+        outbound.purge()
+        from services.ai_guard import ai_guard
+        ai_guard.purge(ai_guard.clock())
+        if limiter is not None:
+            limiter.purge()
 
 
 async def cleanup_drafts() -> None:
@@ -57,10 +63,14 @@ async def main() -> None:
     membership.channel_loader = admin.snapshot
 
     bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=None))
+    await outbound.restore()
+    bot.session.middleware(outbound)
     dp = Dispatcher(events_isolation=SimpleEventIsolation())
     dp.message.middleware(CommandClearsMenuState())
-    dp.message.outer_middleware(RateLimitMiddleware())
-    dp.callback_query.outer_middleware(RateLimitMiddleware())
+    input_limiter = RateLimitMiddleware(settings.INPUT_RATE_SECONDS,
+                                       max_entries=settings.INPUT_RATE_MAX_USERS)
+    dp.message.outer_middleware(input_limiter)
+    dp.callback_query.outer_middleware(input_limiter)
     dp.message.outer_middleware(BroadcastAudienceMiddleware())
     dp.message.outer_middleware(MembershipMiddleware())
     dp.callback_query.outer_middleware(MembershipMiddleware())
@@ -75,7 +85,7 @@ async def main() -> None:
     logger.info("secretary-bot starting (polling)…")
     from services import broadcast
     await broadcast.recover()
-    cleanup = asyncio.create_task(cleanup_context())
+    cleanup = asyncio.create_task(cleanup_context(input_limiter))
     drafts_cleanup = asyncio.create_task(cleanup_drafts())
     broadcaster = asyncio.create_task(broadcast.worker(bot))
     try:

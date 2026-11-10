@@ -242,6 +242,8 @@ async def delete_user_data(tg_user_id: int) -> None:
     recent_context.clear_owner(tg_user_id)
     from services.membership import membership
     membership.clear_user(tg_user_id)
+    from services.ai_guard import ai_guard
+    ai_guard.forget(tg_user_id)
     from database.models import BroadcastSubscriber, BroadcastTarget
     async with get_session() as s:
         await s.execute(delete(BroadcastTarget).where(BroadcastTarget.user_id == tg_user_id))

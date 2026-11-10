@@ -106,3 +106,16 @@ def test_broadcast_migration_mysql_sql(monkeypatch):
         assert "ix_broadcast_target_state" in sql
     finally:
         get_settings.cache_clear()
+
+
+def test_outbound_cooldown_migration_mysql_sql(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "mysql+asyncmy://user:pass@localhost/test")
+    get_settings.cache_clear()
+    try:
+        output = StringIO()
+        command.upgrade(Config("alembic.ini", output_buffer=output), "0011_broadcast:0012_outbound_cooldown", sql=True)
+        sql = output.getvalue()
+        assert "CREATE TABLE outbound_cooldown" in sql
+        assert "CHARSET=utf8mb4" in sql and "COLLATE utf8mb4_unicode_ci" in sql
+    finally:
+        get_settings.cache_clear()
