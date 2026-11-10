@@ -11,6 +11,7 @@ import time
 from aiogram.client.session.middlewares.base import BaseRequestMiddleware
 from aiogram.exceptions import TelegramRetryAfter
 from core.config import get_settings
+from services.protection import metrics
 
 broadcast_request = ContextVar("broadcast_request", default=False)
 
@@ -112,6 +113,7 @@ class OutboundLimiter(BaseRequestMiddleware):
                     busy = self.inflight >= cfg.OUTBOUND_MAX_INFLIGHT
                     priority = low and self.product_waiters > 0
                     if registered and now - start > cfg.OUTBOUND_MAX_WAIT_SECONDS:
+                        metrics.record("out.deadline")
                         raise OutboundDeferred(method, max(delay, 1))
                     if not full and not busy and not priority and delay <= 0:
                         self.next_global = now + cost * cfg.OUTBOUND_GLOBAL_INTERVAL_SECONDS
@@ -119,11 +121,14 @@ class OutboundLimiter(BaseRequestMiddleware):
                             self.chats[key] = now + (cost - 1) * interval
                             self.chats.move_to_end(key)
                         self.inflight += 1
+                        metrics.record("out.accepted")
                         return True
                     if immediate or full or now - start >= cfg.OUTBOUND_MAX_WAIT_SECONDS:
+                        metrics.record("out.deferred")
                         raise OutboundDeferred(method, max(delay, 1))
                     if not registered:
                         if self.waiters >= cfg.OUTBOUND_MAX_WAITERS:
+                            metrics.record("out.wait_full")
                             raise OutboundDeferred(method)
                         self.waiters += 1
                         self.product_waiters += 1
@@ -137,15 +142,28 @@ class OutboundLimiter(BaseRequestMiddleware):
     async def __call__(self, make_request, bot, method):
         reserved = await self.admit(bot, method)
         try:
-            return await make_request(bot, method)
+            result = await make_request(bot, method)
+            if reserved:
+                metrics.record("out.success")
+            return result
         except TelegramRetryAfter as exc:
+            metrics.record("out.flood")
             # Do not repeat, including explicit 429. Existing call sites retain
             # their own delivery state machine. Flood state is shared globally.
             try:
                 await self.flood(exc.retry_after)
             except Exception as persist_error:
+                metrics.record("out.persistence_failed")
                 import logging
                 logging.getLogger("secretary").warning("outbound cooldown persistence failed type=%s", type(persist_error).__name__)
+            raise
+        except asyncio.CancelledError:
+            if reserved:
+                metrics.record("out.cancelled")
+            raise
+        except Exception:
+            if reserved:
+                metrics.record("out.failed")
             raise
         finally:
             if reserved:

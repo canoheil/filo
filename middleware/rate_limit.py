@@ -2,6 +2,7 @@
 
 Not an outbound Telegram limiter or a business/AI concurrency guard.
 """
+from services.protection import metrics
 import asyncio
 from collections import OrderedDict
 import math
@@ -47,12 +48,15 @@ class RateLimitMiddleware(BaseMiddleware):
                 bucket.popitem(last=False)
             previous = bucket.get(key)
             if previous is not None and now - previous < self._limit:
+                metrics.record("safety.rate" if safety else "input.rate")
                 return False
             # Do not evict live keys: cycling identities must not reset a limit.
             if previous is None and len(bucket) >= self._capacity:
+                metrics.record("safety.capacity" if safety else "input.capacity")
                 return False
             bucket[key] = now
             bucket.move_to_end(key)
+            metrics.record("safety.accepted" if safety else "input.accepted")
             return True
 
     def purge(self):

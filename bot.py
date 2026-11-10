@@ -69,6 +69,8 @@ async def main() -> None:
     dp.message.middleware(CommandClearsMenuState())
     input_limiter = RateLimitMiddleware(settings.INPUT_RATE_SECONDS,
                                        max_entries=settings.INPUT_RATE_MAX_USERS)
+    from services.protection import bind_input
+    bind_input(input_limiter)
     dp.message.outer_middleware(input_limiter)
     dp.callback_query.outer_middleware(input_limiter)
     dp.message.outer_middleware(BroadcastAudienceMiddleware())

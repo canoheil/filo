@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import time
 from core.config import get_settings
+from services.protection import metrics
 
 
 @dataclass(frozen=True)
@@ -31,32 +32,37 @@ class AIGuard:
             while bucket and next(iter(bucket.values())) + 60 <= now:
                 bucket.popitem(last=False)
 
+    @staticmethod
+    def result(allowed, reason="accepted"):
+        metrics.record("ai." + reason)
+        return Admission(allowed, reason)
+
     async def acquire(self, owner, scope):
         cfg = get_settings()
         async with self.lock:
             now = self.clock()
             self.purge(now)
             if self.total >= cfg.AI_MAX_CONCURRENT:
-                return Admission(False, "global_busy")
+                return self.result(False, "global_busy")
             if self.active.get(owner, 0) >= cfg.AI_OWNER_MAX_CONCURRENT:
-                return Admission(False, "owner_busy")
+                return self.result(False, "owner_busy")
             checks = [("chat", (owner, scope), cfg.AI_CHAT_INTERVAL_SECONDS),
                       ("owner", owner, cfg.AI_OWNER_INTERVAL_SECONDS)]
             for name, key, interval in checks:
                 bucket = self.history[name]
                 if key in bucket and now - bucket[key] < interval:
-                    return Admission(False, name + "_rate")
+                    return self.result(False, name + "_rate")
                 if key not in bucket and len(bucket) >= cfg.AI_GUARD_MAX_KEYS:
-                    return Admission(False, "capacity")
+                    return self.result(False, "capacity")
             if self.last_global is not None and now - self.last_global < cfg.AI_GLOBAL_INTERVAL_SECONDS:
-                return Admission(False, "global_rate")
+                return self.result(False, "global_rate")
             for name, key, _ in checks:
                 self.history[name][key] = now
                 self.history[name].move_to_end(key)
             self.last_global = now
             self.active[owner] = self.active.get(owner, 0) + 1
             self.total += 1
-            return Admission(True)
+            return self.result(True)
 
     @asynccontextmanager
     async def slot(self, owner, scope):
@@ -87,7 +93,9 @@ class AIGuard:
             self.purge(now)
             key = (owner, kind)
             if key in self.notices or len(self.notices) >= get_settings().AI_GUARD_MAX_KEYS:
+                metrics.record("notice.suppressed")
                 return False
+            metrics.record("notice.allowed")
             self.notices[key] = now
             return True
 
