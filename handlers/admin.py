@@ -42,7 +42,7 @@ def keyboard(rows):
 async def home(message):
     users, connections = await admin.stats()
     await message.answer(f"پنل مدیریت فیلو\nکاربران ثبت‌شده: {users}\nاتصال‌های فعال ثبت‌شده: {connections}",
-                         reply_markup=keyboard([[('مدیریت کانال‌ها', 'adm:list')], [('پیام سراسری', 'adm:bc')]]))
+                         reply_markup=keyboard([[('مدیریت کانال‌ها', 'adm:list')], [('پیام سراسری', 'adm:bc')], [('🛡 محافظت و ضداسپم', 'adm:protection')]]))
 
 
 @router.message(Command("admin"))
@@ -56,6 +56,11 @@ async def callback(query, state, bot):
     await query.answer()
     parts = query.data.split(":")
     action = parts[1]
+    if action == "protection":
+        from services.protection import report
+        await query.message.answer(await report(query.from_user.id), parse_mode=None,
+            reply_markup=keyboard([[('تازه‌سازی', 'adm:protection'), ('داشبورد', 'adm:home')]]))
+        return
     if action == "bc":
         await state.clear()
         jobs = await broadcast.recent(query.from_user.id)

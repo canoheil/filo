@@ -4,6 +4,7 @@ idempotency on (connection, chat, message)."""
 
 import asyncio
 from services.ai_guard import ai_guard
+from services.protection import metrics
 from services.outbound import OutboundDeferred
 
 from aiogram import Router, F
@@ -78,6 +79,7 @@ async def on_business_message(message: Message, bot: Bot) -> None:
         return  # stickers/photos without caption: skip for now (Pro feature later)
 
     if len(text) > settings.AI_BUSINESS_MAX_CHARS:
+        metrics.record("ai.oversized")
         return
     async with ai_guard.slot(conn.user_id, (connection_id, message.chat.id)) as admission:
         if not admission.allowed:
