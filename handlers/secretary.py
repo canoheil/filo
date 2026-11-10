@@ -2,6 +2,10 @@
 Safe defaults: draft-for-approval, ignore own outgoing echoes & other bots,
 idempotency on (connection, chat, message)."""
 
+import asyncio
+from services.ai_guard import ai_guard
+from services.outbound import OutboundDeferred
+
 from aiogram import Router, F
 from aiogram import Bot
 from aiogram.filters import Command
@@ -14,7 +18,7 @@ from services import store, persona as persona_svc, ai, chat_control, usage
 from services.context import recent_context
 from services.membership import membership
 from services.draft_lifecycle import expired, expire_claim, caption
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 
 logger = setup_logging(get_settings().LOG_LEVEL)
 router = Router()
@@ -73,106 +77,114 @@ async def on_business_message(message: Message, bot: Bot) -> None:
     if not text:
         return  # stickers/photos without caption: skip for now (Pro feature later)
 
-    # --- Idempotency: Telegram retries --------------------------------------
-    is_new = await store.log_inbound_once(connection_id, message.chat.id, message.message_id)
-    if not is_new:
+    if len(text) > settings.AI_BUSINESS_MAX_CHARS:
         return
+    async with ai_guard.slot(conn.user_id, (connection_id, message.chat.id)) as admission:
+        if not admission.allowed:
+            return
+        # --- Idempotency: Telegram retries --------------------------------------
+        is_new = await store.log_inbound_once(connection_id, message.chat.id, message.message_id)
+        if not is_new:
+            return
 
-    access = await membership.check(bot, conn.user_id)
-    if access.state != "member":
-        reason = "membership" if access.state == "missing" else "membership_error"
-        await chat_control.ensure(conn.user_id, connection_id, message.chat.id)
-        await chat_control.note(conn.user_id, connection_id, message.chat.id, reason)
-        await usage.inbound(connection_id, message.chat.id, message.message_id, reason)
-        return
+        access = await membership.check(bot, conn.user_id)
+        if access.state != "member":
+            reason = "membership" if access.state == "missing" else "membership_error"
+            await chat_control.ensure(conn.user_id, connection_id, message.chat.id)
+            await chat_control.note(conn.user_id, connection_id, message.chat.id, reason)
+            await usage.inbound(connection_id, message.chat.id, message.message_id, reason)
+            return
 
-    routing = await chat_control.check(conn.user_id, connection_id, message.chat.id)
-    if routing != "active":
-        await chat_control.note(conn.user_id, connection_id, message.chat.id, routing)
-        await usage.inbound(connection_id, message.chat.id, message.message_id, routing)
-        return
-    p = await store.get_or_create_persona(conn.user_id)
-    if p.is_paused:
-        await chat_control.note(conn.user_id, connection_id, message.chat.id, "global_paused")
-        await usage.inbound(connection_id, message.chat.id, message.message_id, "global_paused")
-        return
-
-    routing_version = await chat_control.version(conn.user_id, connection_id, message.chat.id)
-    user = await store.get_or_create_user(conn.user_id, None)
-
-    # --- Quota (free tier: SHARED AI Studio key, so this is the safety rail) -
-    request_key = usage.business_key(conn.user_id, connection_id, message.chat.id, message.message_id)
-    allowed, used = await store.quota_hit_and_count(user.tg_user_id, settings.FREE_DAILY_LIMIT,
-                                                  request_key=request_key, source="business")
-    if not allowed:
-        await chat_control.note(conn.user_id, connection_id, message.chat.id, "quota")
-        await usage.inbound(connection_id, message.chat.id, message.message_id, "quota")
-        try:
-            await bot.send_message(conn.user_id, f"⚠️ سقف رایگان امروزت تمام شد ({settings.FREE_DAILY_LIMIT} جواب/روز).\nبرای ادامه، پلن Pro را فعال کن یا فردا برگرد.")
-        except Exception:
-            pass
-        logger.info("quota overflow user=%s", user.tg_user_id)
-        return
-
-    await chat_control.note(conn.user_id, connection_id, message.chat.id, "active")
-    await usage.inbound(connection_id, message.chat.id, message.message_id, "ai_reserved")
-    if getattr(p, "context_enabled", False):
-        # Recheck consent after quota I/O; do not start caching using a stale flag.
+        routing = await chat_control.check(conn.user_id, connection_id, message.chat.id)
+        if routing != "active":
+            await chat_control.note(conn.user_id, connection_id, message.chat.id, routing)
+            await usage.inbound(connection_id, message.chat.id, message.message_id, routing)
+            return
         p = await store.get_or_create_persona(conn.user_id)
-    system_prompt = persona_svc.build_system_prompt(p, use_case=getattr(user, "use_case", "business"))
-    history = None
-    if getattr(p, "context_enabled", False):
-        key, ticket, history = recent_context.begin(conn.user_id, connection_id, message.chat.id)
-        recent_context.append(key, ticket, "user", text)
-    else:
-        recent_context.clear_owner(conn.user_id)
-    try:
-        reply = (await ai.generate_reply(system_prompt, text, history=history)
-                 if history is not None else await ai.generate_reply(system_prompt, text))
-    except Exception as e:
-        await usage.finish(conn.user_id, request_key, e)
-        await usage.inbound(connection_id, message.chat.id, message.message_id, "ai_failed")
-        logger.error("AI failure type=%s", type(e).__name__)
+        if p.is_paused:
+            await chat_control.note(conn.user_id, connection_id, message.chat.id, "global_paused")
+            await usage.inbound(connection_id, message.chat.id, message.message_id, "global_paused")
+            return
+
+        routing_version = await chat_control.version(conn.user_id, connection_id, message.chat.id)
+        user = await store.get_or_create_user(conn.user_id, None)
+
+        # --- Quota (free tier: SHARED AI Studio key, so this is the safety rail) -
+        request_key = usage.business_key(conn.user_id, connection_id, message.chat.id, message.message_id)
+        allowed, used = await store.quota_hit_and_count(user.tg_user_id, settings.FREE_DAILY_LIMIT,
+                                                      request_key=request_key, source="business")
+        if not allowed:
+            await chat_control.note(conn.user_id, connection_id, message.chat.id, "quota")
+            await usage.inbound(connection_id, message.chat.id, message.message_id, "quota")
+            try:
+                if await ai_guard.notice(conn.user_id, "quota"):
+                    await bot.send_message(conn.user_id, f"⚠️ سقف رایگان امروزت تمام شد ({settings.FREE_DAILY_LIMIT} جواب/روز).\nبرای ادامه، پلن Pro را فعال کن یا فردا برگرد.")
+            except Exception:
+                pass
+            logger.info("quota overflow user=%s", user.tg_user_id)
+            return
+
+        await chat_control.note(conn.user_id, connection_id, message.chat.id, "active")
+        await usage.inbound(connection_id, message.chat.id, message.message_id, "ai_reserved")
+        if getattr(p, "context_enabled", False):
+            # Recheck consent after quota I/O; do not start caching using a stale flag.
+            p = await store.get_or_create_persona(conn.user_id)
+        system_prompt = persona_svc.build_system_prompt(p, use_case=getattr(user, "use_case", "business"))
+        history = None
+        if getattr(p, "context_enabled", False):
+            key, ticket, history = recent_context.begin(conn.user_id, connection_id, message.chat.id)
+            recent_context.append(key, ticket, "user", text)
+        else:
+            recent_context.clear_owner(conn.user_id)
         try:
-            await bot.send_message(conn.user_id, "❗ موقع جواب دادن به یک پیام به مشکل خوردم. لاگ را چک کن.")
-        except Exception:
-            pass
-        return
+            async with asyncio.timeout(settings.AI_REQUEST_TIMEOUT_SECONDS):
+                reply = (await ai.generate_reply(system_prompt, text, history=history)
+                         if history is not None else await ai.generate_reply(system_prompt, text))
+        except Exception as e:
+            await usage.finish(conn.user_id, request_key, e)
+            await usage.inbound(connection_id, message.chat.id, message.message_id, "ai_failed")
+            logger.error("AI failure type=%s", type(e).__name__)
+            try:
+                if await ai_guard.notice(conn.user_id, "ai_error"):
+                    await bot.send_message(conn.user_id, "❗ موقع جواب دادن به یک پیام به مشکل خوردم. لاگ را چک کن.")
+            except Exception:
+                pass
+            return
 
-    await usage.finish(conn.user_id, request_key)
-    await usage.inbound(connection_id, message.chat.id, message.message_id, "ai_ok")
-    # A takeover/pause/resume during AI invalidates that in-flight response, even
-    # if the temporary pause has already been lifted before generation finishes.
-    if (await chat_control.version(conn.user_id, connection_id, message.chat.id) != routing_version
-            or await chat_control.check(conn.user_id, connection_id, message.chat.id) != "active"):
-        await chat_control.note(conn.user_id, connection_id, message.chat.id, "reply_superseded")
-        await usage.inbound(connection_id, message.chat.id, message.message_id, "reply_superseded")
-        return
-    # Persist the generated reply before any delivery, including auto mode.
-    draft_id = await store.save_draft(connection_id, message.chat.id, message.message_id, reply)
-    # Settings may have changed while the AI request was in flight.
-    current = await store.get_or_create_persona(conn.user_id)
-    if current.is_paused:
-        return  # keep a pending draft; do not send while paused
-    if current.auto_reply:
-        row = await store.claim_draft(draft_id, conn.user_id)
-        if row is not None:
-            notice = await _deliver_draft(row, draft_id, conn.user_id, bot)
-            if notice != "✅ ارسال شد.":
-                try:
-                    await bot.send_message(conn.user_id, f"پاسخ خودکار #{draft_id}\n{notice}", parse_mode=None)
-                except Exception as exc:
-                    logger.warning("auto notification failed type=%s", type(exc).__name__)
-        return
+        await usage.finish(conn.user_id, request_key)
+        await usage.inbound(connection_id, message.chat.id, message.message_id, "ai_ok")
+        # A takeover/pause/resume during AI invalidates that in-flight response, even
+        # if the temporary pause has already been lifted before generation finishes.
+        if (await chat_control.version(conn.user_id, connection_id, message.chat.id) != routing_version
+                or await chat_control.check(conn.user_id, connection_id, message.chat.id) != "active"):
+            await chat_control.note(conn.user_id, connection_id, message.chat.id, "reply_superseded")
+            await usage.inbound(connection_id, message.chat.id, message.message_id, "reply_superseded")
+            return
+        # Persist the generated reply before any delivery, including auto mode.
+        draft_id = await store.save_draft(connection_id, message.chat.id, message.message_id, reply)
+        # Settings may have changed while the AI request was in flight.
+        current = await store.get_or_create_persona(conn.user_id)
+        if current.is_paused:
+            return  # keep a pending draft; do not send while paused
+        if current.auto_reply:
+            row = await store.claim_draft(draft_id, conn.user_id)
+            if row is not None:
+                notice = await _deliver_draft(row, draft_id, conn.user_id, bot)
+                if notice != "✅ ارسال شد.":
+                    try:
+                        await bot.send_message(conn.user_id, f"پاسخ خودکار #{draft_id}\n{notice}", parse_mode=None)
+                    except Exception as exc:
+                        logger.warning("auto notification failed type=%s", type(exc).__name__)
+            return
 
-    # --- Draft mode (default): owner approves in DM --------------------------
-    kb = draft_keyboard(draft_id)
-    preview = f"✍️ پیش‌نویس #{draft_id} برای جواب به «{(message.from_user.first_name if message.from_user else 'کاربر')}»:"
-    try:
-        await bot.send_message(conn.user_id, preview, parse_mode=None)
-        await bot.send_message(conn.user_id, reply, reply_markup=kb, parse_mode=None)
-    except Exception as exc:
-        logger.warning("draft preview failed id=%s type=%s", draft_id, type(exc).__name__)
+        # --- Draft mode (default): owner approves in DM --------------------------
+        kb = draft_keyboard(draft_id)
+        preview = f"✍️ پیش‌نویس #{draft_id} برای جواب به «{(message.from_user.first_name if message.from_user else 'کاربر')}»:"
+        try:
+            await bot.send_message(conn.user_id, preview, parse_mode=None)
+            await bot.send_message(conn.user_id, reply, reply_markup=kb, parse_mode=None)
+        except Exception as exc:
+            logger.warning("draft preview failed id=%s type=%s", draft_id, type(exc).__name__)
 
 
 @router.callback_query(F.data.startswith("draft:"))
@@ -248,6 +260,9 @@ async def _deliver_draft(row, draft_id: int, owner_id: int, bot: Bot) -> str:
         sent = await bot.send_message(
             chat_id=row.chat_id, text=row.draft_text or "",
             business_connection_id=row.connection_id, parse_mode=None)
+    except (OutboundDeferred, TelegramRetryAfter):
+        await store.set_draft_delivery_state(draft_id, "blocked")
+        return "⚠️ ارسال انجام نشد؛ محدودیت موقت ارسال فعال است. ارسال خودکار تکرار نمی‌شود."
     except (TelegramBadRequest, TelegramForbiddenError):
         await store.set_draft_delivery_state(draft_id, "blocked")
         return "⚠️ تلگرام ارسال را نپذیرفت؛ پیش‌نویس نگه داشته شد."

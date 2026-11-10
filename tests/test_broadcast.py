@@ -272,3 +272,21 @@ async def test_service_rejects_all_unauthorized_admin_operations(db):
     for action in [broadcast.create(7, 456), broadcast.report(7, job_id), broadcast.recent(7)]:
         with pytest.raises(PermissionError):
             await action
+
+
+@pytest.mark.asyncio
+async def test_local_outbound_deferral_preserves_attempt_budget_and_resets_priority(db):
+    from services.outbound import OutboundDeferred, broadcast_request
+    job_id = await setup_job()
+    await broadcast.control(42, job_id, 'confirm')
+    method = CopyMessage(chat_id=1,from_chat_id=42,message_id=123)
+    async def defer(**kwargs):
+        assert broadcast_request.get()
+        raise OutboundDeferred(method,2)
+    await broadcast.step(SimpleNamespace(copy_message=AsyncMock(side_effect=defer)))
+    assert not broadcast_request.get()
+    async with db() as s:
+        target = await s.get(Target,(job_id,1))
+        assert target.state == 'pending' and target.attempts == 0
+    _, counts = await broadcast.report(42,job_id)
+    assert counts == {'pending':2}

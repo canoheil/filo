@@ -202,3 +202,10 @@ class BroadcastTarget(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, index=True)
     state: Mapped[str] = mapped_column(String(16), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class OutboundCooldown(Base):
+    __tablename__ = "outbound_cooldown"
+    __table_args__ = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    blocked_until: Mapped[datetime] = mapped_column(DateTime)

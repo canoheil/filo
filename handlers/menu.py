@@ -1,4 +1,7 @@
 """Private, owner-scoped inline navigation. No message content in callback data."""
+import asyncio
+from services.ai_guard import ai_guard
+
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
@@ -330,31 +333,37 @@ async def sandbox_reply(message: Message, state: FSMContext):
         await message.answer("اول نام، نقش و لحن آسیب‌دیده را در شخصیت دستیار اصلاح کن؛ سپس آزمایش را شروع کن.",
                              reply_markup=keyboard([button("اصلاح شخصیت", "persona")], back()))
         return
-    request_key = usage.sandbox_key(owner_id, message.chat.id, message.message_id)
-    allowed, _ = await store.quota_hit_and_count(owner_id, get_settings().FREE_DAILY_LIMIT,
-                                               request_key=request_key, source="sandbox")
-    await state.clear()
-    if not allowed:
-        await message.answer("درخواست جدیدی به AI ارسال نشد؛ سهمیهٔ امروز را بررسی کن. این پیام ممکن است قبلاً پردازش شده باشد.", reply_markup=home_keyboard())
-        return
-    from services.setup import fingerprint
-    request_hash = fingerprint(p, user.use_case)
-    try:
-        reply = await ai.generate_reply(persona_service.build_system_prompt(p, use_case=user.use_case), text)
-    except Exception as exc:
-        await usage.finish(owner_id, request_key, exc)
-        await message.answer("آزمایش پاسخ ناموفق بود؛ کمی بعد دوباره امتحان کن. سهمیهٔ این درخواست مصرف شد.",
-                             reply_markup=home_keyboard())
-        return
-    await usage.finish(owner_id, request_key)
-    await store.record_setup_test(owner_id, request_hash)
-    await message.answer("🧪 پاسخ آزمایشی — به مخاطبی ارسال نشده:", parse_mode=None)
-    for offset in range(0, len(reply), 1800):
-        await message.answer(reply[offset:offset + 1800], parse_mode=None)
-    await message.answer("برای اصلاح پاسخ، اطلاعات یا قوانین را ویرایش کن.", reply_markup=keyboard(
-        [button("پاسخ مناسبه؛ ادامه", "setup:approve", "success")],
-        [button("اصلاح اطلاعات / قوانین", "knowledge"), button("اصلاح لحن", "edit:tone")],
-        [button("آزمایش دوباره", "sandbox", "primary")], back()))
+    async with ai_guard.slot(owner_id, ("sandbox", message.chat.id)) as admission:
+        if not admission.allowed:
+            if await ai_guard.notice(owner_id, "sandbox_busy"):
+                await message.answer("فعلاً ظرفیت پردازش پر است یا درخواست‌ها خیلی نزدیک‌اند؛ کمی بعد دوباره امتحان کن. سهمیه مصرف نشد.")
+            return
+        request_key = usage.sandbox_key(owner_id, message.chat.id, message.message_id)
+        allowed, _ = await store.quota_hit_and_count(owner_id, get_settings().FREE_DAILY_LIMIT,
+                                                   request_key=request_key, source="sandbox")
+        await state.clear()
+        if not allowed:
+            await message.answer("درخواست جدیدی به AI ارسال نشد؛ سهمیهٔ امروز را بررسی کن. این پیام ممکن است قبلاً پردازش شده باشد.", reply_markup=home_keyboard())
+            return
+        from services.setup import fingerprint
+        request_hash = fingerprint(p, user.use_case)
+        try:
+            async with asyncio.timeout(get_settings().AI_REQUEST_TIMEOUT_SECONDS):
+                reply = await ai.generate_reply(persona_service.build_system_prompt(p, use_case=user.use_case), text)
+        except Exception as exc:
+            await usage.finish(owner_id, request_key, exc)
+            await message.answer("آزمایش پاسخ ناموفق بود؛ کمی بعد دوباره امتحان کن. سهمیهٔ این درخواست مصرف شد.",
+                                 reply_markup=home_keyboard())
+            return
+        await usage.finish(owner_id, request_key)
+        await store.record_setup_test(owner_id, request_hash)
+        await message.answer("🧪 پاسخ آزمایشی — به مخاطبی ارسال نشده:", parse_mode=None)
+        for offset in range(0, len(reply), 1800):
+            await message.answer(reply[offset:offset + 1800], parse_mode=None)
+        await message.answer("برای اصلاح پاسخ، اطلاعات یا قوانین را ویرایش کن.", reply_markup=keyboard(
+            [button("پاسخ مناسبه؛ ادامه", "setup:approve", "success")],
+            [button("اصلاح اطلاعات / قوانین", "knowledge"), button("اصلاح لحن", "edit:tone")],
+            [button("آزمایش دوباره", "sandbox", "primary")], back()))
 
 
 @router.message(EditPersona.sandbox, ~F.text)

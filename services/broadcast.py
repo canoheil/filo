@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, Teleg
 from database.connection import get_session
 from database.models import BroadcastJob as Job, BroadcastTarget as Target, BroadcastSubscriber as Subscriber, AdminAudit
 from services.admin import authorized
+from services.outbound import broadcast_request, OutboundDeferred
 
 SUPPORTED = {"text", "photo", "video", "document", "animation", "audio", "voice", "video_note", "sticker"}
 
@@ -143,7 +144,12 @@ async def finish(job_id, user_id, outcome, retry_after=None):
         target = await s.scalar(select(Target).where(Target.job_id == job_id, Target.user_id == user_id).with_for_update())
         if job is None or target is None or target.state != "sending":
             return
-        if outcome == "retry":
+        if outcome == "deferred":
+            # No network call occurred; local congestion isn't a failed attempt.
+            target.attempts = max(0, target.attempts - 1)
+            target.state = "pending" if job.state == "queued" else "skipped"
+            job.retry_at = datetime.utcnow() + timedelta(seconds=max(1, retry_after))
+        elif outcome == "retry":
             target.state = "pending" if job.state == "queued" and target.attempts < 5 else "skipped" if job.state != "queued" else "failed"
             job.retry_at = datetime.utcnow() + timedelta(seconds=max(1, retry_after))
         else:
@@ -162,8 +168,14 @@ async def step(bot):
     job_id, user_id, source_chat, source_message = item
     try:
         # Preview is bot-owned and immutable to edits of the original admin message.
-        await bot.copy_message(chat_id=user_id, from_chat_id=source_chat, message_id=source_message,
-                               request_timeout=20)
+        token = broadcast_request.set(True)
+        try:
+            await bot.copy_message(chat_id=user_id, from_chat_id=source_chat, message_id=source_message,
+                                   request_timeout=20)
+        finally:
+            broadcast_request.reset(token)
+    except OutboundDeferred as exc:
+        await finish(job_id, user_id, "deferred", exc.retry_after)
     except TelegramRetryAfter as exc:
         await finish(job_id, user_id, "retry", exc.retry_after)
     except TelegramForbiddenError:
