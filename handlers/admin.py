@@ -41,7 +41,7 @@ def keyboard(rows):
 
 async def home(message):
     users, connections = await admin.stats()
-    await message.answer(f"پنل مدیریت فیلو\nکاربران ثبت‌شده: {users}\nاتصال‌های فعال ثبت‌شده: {connections}",
+    await message.answer(f"پنل مدیریت فیلو\nکاربران ثبت‌شده: {users}\nاتصال‌های فعال ثبت‌شده: {connections}\n\nصفرکردن مصرف سهمیه: /recharge USER_ID",
                          reply_markup=keyboard([[('مدیریت کانال‌ها', 'adm:list')], [('پیام سراسری', 'adm:bc')], [('🛡 محافظت و ضداسپم', 'adm:protection')]]))
 
 
@@ -49,6 +49,22 @@ async def home(message):
 async def entry(message, state):
     await state.clear()
     await home(message)
+
+
+@router.message(Command("recharge"))
+async def recharge(message, state):
+    await state.clear()
+    parts = (message.text or "").split()
+    if (len(parts) != 2 or not parts[1].isascii() or not parts[1].isdigit()
+            or len(parts[1]) > 19 or not 0 < int(parts[1]) < 2**63):
+        await message.answer("برای صفرکردن مصرف سهمیهٔ روزانه، شناسهٔ عددی کاربر را بفرست:\n/recharge 123456789")
+        return
+    user_id = int(parts[1])
+    changed = await admin.recharge(message.from_user.id, user_id)
+    await message.answer(
+        f"✅ مصرف سهمیهٔ کاربر {user_id} صفر شد. درخواست‌های جدید از این مقدار محاسبه می‌شوند."
+        if changed else "کاربری با این شناسه در دیتابیس پیدا نشد؛ تغییری انجام نشد.",
+        parse_mode=None)
 
 
 @router.callback_query(F.data.startswith("adm:"))
