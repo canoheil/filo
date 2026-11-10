@@ -179,3 +179,104 @@ async def test_real_dispatcher_admin_private_guard(monkeypatch):
     finally:
         await bot.session.close()
         await dp.storage.close()
+
+
+@pytest.mark.asyncio
+async def test_recharge_changes_only_target_quota_and_retains_history(db):
+    from database.models import User as DbUser, AiRequest
+    async with db() as s:
+        s.add_all([DbUser(tg_user_id=9000000000000, quota_used=30, quota_date='2026-11-07',plan='free'),
+                   DbUser(tg_user_id=2, quota_used=12,quota_date='2026-11-07')])
+        await s.flush()
+        s.add(AiRequest(request_key='old',user_id=9000000000000,source='business',state='succeeded'))
+        await s.commit()
+    assert await admin.recharge(42,9000000000000)
+    async with db() as s:
+        user = await s.get(DbUser,9000000000000)
+        assert (user.quota_used,user.quota_date,user.plan) == (0,'2026-11-07','free')
+        assert (await s.get(DbUser,2)).quota_used == 12
+        assert (await s.get(AiRequest,'old')).state == 'succeeded'
+        audit = (await s.scalars(select(AdminAudit))).one()
+        assert audit.admin_id == 42 and audit.action == 'quota_recharge'
+    assert await admin.recharge(42,9000000000000)  # safe to reset an already-zero counter
+
+
+@pytest.mark.asyncio
+async def test_recharge_unknown_and_unauthorized(db):
+    from database.models import User as DbUser
+    with pytest.raises(PermissionError):
+        await admin.recharge(7,123)
+    assert not await admin.recharge(42,123)
+    async with db() as s:
+        assert await s.get(DbUser,123) is None
+        assert not (await s.scalars(select(AdminAudit))).all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('argument',['','abc','-1','0','123 456','9223372036854775808','۴۲','1'*100])
+async def test_recharge_bad_command_never_mutates(monkeypatch,argument):
+    from handlers import admin as panel
+    mutate = AsyncMock()
+    monkeypatch.setattr(admin,'recharge',mutate)
+    message = SimpleNamespace(text='/recharge '+argument,from_user=SimpleNamespace(id=42),answer=AsyncMock())
+    await panel.recharge(message,AsyncMock())
+    mutate.assert_not_awaited()
+    assert '/recharge 123456789' in message.answer.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_real_dispatcher_recharge_is_private_and_admin_only(monkeypatch):
+    from aiogram import Bot, Dispatcher, Router
+    from aiogram.filters import Command
+    from aiogram.types import Update
+    from handlers import admin as panel
+    monkeypatch.setattr(admin,'authorized',lambda u:u==42)
+    mutate = AsyncMock(return_value=True)
+    monkeypatch.setattr(admin,'recharge',mutate)
+    monkeypatch.setattr(Message,'answer',AsyncMock())
+    router = Router()
+    router.message.middleware(AdminGuard())
+    router.message.register(panel.recharge,Command('recharge'))
+    dp = Dispatcher()
+    dp.include_router(router)
+    bot = Bot('123456:ABCDEFabcdef1234567890abcdef123456789')
+    try:
+        for i,(uid,chat_id,kind) in enumerate([(7,7,'private'),(42,-1001,'supergroup'),(42,42,'private')]):
+            msg = Message(message_id=i+1,date=datetime.now(timezone.utc),chat=Chat(id=chat_id,type=kind),
+                          from_user=User(id=uid,is_bot=False,first_name='a'),text='/recharge 123456789')
+            await dp.feed_update(bot,Update(update_id=i+1,message=msg))
+        mutate.assert_awaited_once_with(42,123456789)
+    finally:
+        await bot.session.close()
+        await dp.storage.close()
+
+
+@pytest.mark.asyncio
+async def test_recharge_admin_entry_does_not_require_membership(monkeypatch):
+    from middleware.membership import MembershipMiddleware
+    from services.membership import membership
+    monkeypatch.setattr(admin,'authorized',lambda u:u==42)
+    check = AsyncMock()
+    monkeypatch.setattr(membership,'check',check)
+    handler = AsyncMock()
+    msg = Message(message_id=1,date=datetime.now(timezone.utc),chat=Chat(id=42,type='private'),
+                  from_user=User(id=42,is_bot=False,first_name='a'),text='/recharge 123')
+    await MembershipMiddleware()(handler,msg,{})
+    handler.assert_awaited_once()
+    check.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_requests_count_after_recharge_without_replaying_old_keys(db,monkeypatch):
+    from services import store
+    from services.quota import utc_today
+    from database.models import User as DbUser, AiRequest
+    monkeypatch.setattr(store,'get_session',admin.get_session)
+    async with db() as s:
+        s.add(DbUser(tg_user_id=123,quota_used=30,quota_date=utc_today()))
+        await s.flush()
+        s.add(AiRequest(request_key='old',user_id=123,source='business',state='succeeded'))
+        await s.commit()
+    assert await admin.recharge(42,123)
+    assert await store.quota_hit_and_count(123,30,request_key='old') == (False,0)
+    assert await store.quota_hit_and_count(123,30,request_key='new') == (True,1)

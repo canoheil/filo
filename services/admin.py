@@ -76,3 +76,21 @@ async def mutate(actor, action, *, channel=None, row_id=None, version=None):
         s.add(AdminAudit(admin_id=actor, action=action, target_id=row.id))
         await s.commit()
     return True
+
+
+async def recharge(actor: int, user_id: int) -> bool:
+    """Reset an existing user's quota under the same parent lock as reservations."""
+    if not authorized(actor):
+        raise PermissionError()
+    if not isinstance(user_id, int) or isinstance(user_id, bool) or not 0 < user_id < 2**63:
+        raise ValueError("Invalid Telegram user ID")
+    async with get_session() as s:
+        user = await s.scalar(select(User).where(User.tg_user_id == user_id).with_for_update())
+        if user is None:
+            return False
+        user.quota_used = 0
+        # Audit target_id is an internal Integer, not a Telegram BigInteger.
+        # Record the admin action without truncating a potentially large TG ID.
+        s.add(AdminAudit(admin_id=actor, action="quota_recharge", target_id=None))
+        await s.commit()
+        return True

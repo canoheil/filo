@@ -30,7 +30,7 @@ class MembershipMiddleware(BaseMiddleware):
         retry = isinstance(event, CallbackQuery) and event.data == "membership:check"
         from services.admin import authorized
         admin_entry = (isinstance(event, Message) and event.text and
-                       event.text.split(maxsplit=1)[0].split("@", 1)[0].lower() == "/admin")
+                       event.text.split(maxsplit=1)[0].split("@", 1)[0].lower() in {"/admin", "/recharge"})
         admin_callback = isinstance(event, CallbackQuery) and (event.data or "").startswith("adm:")
         admin_state = data.get("state")
         current_state = await admin_state.get_state() if admin_state else None
